@@ -218,6 +218,12 @@
             for="script">剧本</label><textarea id="script" rows="8" required
             placeholder="粘贴剧本，保留对白、地点与定版文字"></textarea><label for="requirements">制作要求</label><textarea id="requirements"
             rows="3" required placeholder="风格、受众、必须保留的细节、参考素材文件名"></textarea>
+          <details class="spacer">
+            <summary>制片简报（选填）</summary>
+            <label for="audience">目标观众</label><input id="audience" maxlength="600" placeholder="例如：第一次了解品牌的应届生">
+            <label for="objective">传播目标</label><input id="objective" maxlength="600" placeholder="希望观众记住或采取什么行动">
+            <label for="channel">播放渠道</label><input id="channel" maxlength="600" placeholder="例如：招聘会现场大屏">
+          </details>
           <div class="row">
             <div><label for="seconds">目标时长（秒）</label><input id="seconds" type="number" min="2" max="600" value="60"
                 required></div>
@@ -225,7 +231,8 @@
                 <option value="review">逐镜确认</option>
                 <option value="auto">全自动成片</option>
               </select></div>
-          </div><label><input type="checkbox" id="music" checked> 生成原创配乐</label><button class="spacer">开始生产</button>
+          </div><label><input type="checkbox" id="music" checked> 生成原创配乐</label>
+          <label><input type="checkbox" id="renderDraft"> 正片前生成单阶段渲染草稿</label><button class="spacer">开始生产</button>
         </form>
         <details>
           <summary>可用参考素材</summary>
@@ -240,6 +247,7 @@
       <section>
         <p id="notice" role="alert"></p>
         <h2 id="name">制作进度</h2>
+        <p><a id="storyboard" href="/storyboard" hidden>打开分镜放映室 ↗</a></p>
         <div id="progress" class="muted">提交剧本后，可在这里查看分镜、候选片和验收结果。</div>
         <div id="shots"></div>
         <div id="ops"></div>
@@ -268,7 +276,7 @@
       failed: '待处理',
       cancelled: '已停止'
     };
-    let jid = '',
+    let jid = new URLSearchParams(location.search).get('job') || '',
       lastOps = '',
       seq = 0;
     async function api(url, body) {
@@ -288,10 +296,32 @@
       $('notice').textContent = e.message || e
     }
 
+    function selectJob(id) {
+      if (id === jid) return;
+      jid = id;
+      history.replaceState(null, '', '?job=' + encodeURIComponent(id));
+      lastOps = '';
+      $('notice').textContent = '';
+      $('ops').replaceChildren();
+      $('shots').replaceChildren();
+      $('delivery').replaceChildren();
+      $('events').replaceChildren();
+      $('storyboard').hidden = true;
+      $('name').textContent = '制作进度';
+      $('progress').textContent = '正在读取任务';
+      hidePlayer()
+    }
+    function hidePlayer() {
+      const player = $('player');
+      player.pause();
+      player.hidden = true;
+      player.removeAttribute('src');
+      player.load()
+    }
     function play(url) {
       $('player').hidden = false;
       $('player').src = url;
-      $('player').play().catch(() => {})
+      $('player').play().catch(e => { if (e.name !== 'AbortError') msg(e) })
     }
     async function refresh() {
       const turn = ++seq;
@@ -299,15 +329,25 @@
       if (turn !== seq) return;
       $('jobs').innerHTML = list.map(j => '<option value="' + j.id + '">' + esc(j.spec) + ' · ' + states[j.state] +
         '</option>').join('');
-      if (!jid && list.length) jid = list[0].id;
+      if (!jid) jid = list[0]?.id || '';
+      if (jid && !list.some(j => j.id === jid)) $('jobs').add(new Option('指定项目', jid));
       if (!jid) return;
       $('jobs').value = jid;
       const url = '/api/jobs/' + jid;
       const j = await api(url);
       if (turn !== seq) return;
-      const shots = j.plan?.shots || [],
+      const shots = j.shot_summaries || j.plan?.shots || [],
         chosen = j.takes.filter(t => t.selected);
+      const nextShot = chosen.length + 1;
       $('name').textContent = j.spec.title;
+      $('storyboard').hidden = false;
+      $('storyboard').href = '/storyboard?job=' + jid;
+      if (!$('player').hidden) {
+        const playing = $('player').getAttribute('src');
+        const valid = j.state === 'done' && playing === url + '/film.mp4' ||
+          j.takes.some(t => t.eligible && playing === url + '/C' + t.code + '.mp4');
+        if (!valid) hidePlayer()
+      }
       $('progress').innerHTML = '<b>' + states[j.state] + '</b> · ' + esc(j.detail) + '<p>' + chosen.length + ' / ' +
         shots.length + ' 镜已采用</p><div class="line"><i style="width:' + (shots.length ? chosen.length / shots.length *
           100 : 0) + '%"></i></div>';
@@ -316,9 +356,14 @@
         '</td><td>' + j.takes.filter(t => t.shot === i + 1 && t.eligible).map(t =>
           '<button class="light" data-play="' + url + '/C' + t.code + '.mp4">' + (t.selected ? '✓ ' : '') + 'C' +
           String(t.code).padStart(3, '0') + '</button>').join(' ') + '</td></tr>').join('') + '</table>' : '';
-      const key = JSON.stringify([jid, j.state, j.gate, j.takes.length, shots.length]);
+      const key = JSON.stringify([jid, j.state, j.gate, nextShot, j.takes.filter(t => t.eligible).map(t => t.code), shots.length]);
       if (key !== lastOps) {
         lastOps = key;
+        const editsOpen = $('ops').querySelector('details')?.open;
+        const inputs = {};
+        for (const id of ['shot','note','variants','end']) {
+          if ($(id)?.dataset.edited) inputs[id] = $(id).value
+        }
         let html = '';
         if (['running', 'queued', 'review'].includes(j.state)) html +=
           '<button class="light" data-op="stop">停止生产</button> ';
@@ -328,11 +373,16 @@
           '</button>').join(' ');
         if (shots.length) html +=
           '<details class="spacer"><summary>修改镜头或批量生产</summary><label>镜号</label><input type="number" id="shot" min="1" max="' +
-          shots.length + '" value="' + (j.gate || Math.min(chosen.length + 1, shots.length)) +
-          '"><label>修改意见</label><textarea id="note" placeholder="例如：用 C001 的尾帧衔接，镜头缓慢前移"></textarea><label>候选数量</label><select id="variants"><option>1</option><option>2</option></select><button class="spacer" data-op="revise">优先重制此镜</button><label>从下一待采用镜头连续生产到镜号</label><input id="end" type="number" min="1" max="' +
-          shots.length + '" value="' + shots.length +
-          '"><button class="spacer light" data-op="batch">执行批量</button></details>';
-        $('ops').innerHTML = '<div class="spacer">' + html + '</div>'
+          Math.min(nextShot, shots.length) + '" value="' + (j.gate || Math.min(nextShot, shots.length)) +
+          '"><label>修改意见</label><textarea id="note" placeholder="例如：用 C001 的尾帧衔接，镜头缓慢前移"></textarea><label>候选数量</label><select id="variants"><option>1</option><option>2</option></select><button class="spacer" data-op="revise">优先重制此镜</button>' +
+          (nextShot <= shots.length ? '<label>从下一待采用镜头连续生产到镜号</label><input id="end" type="number" min="' +
+          nextShot + '" max="' + shots.length + '" value="' + shots.length +
+          '"><button class="spacer light" data-op="batch">执行批量</button>' : '') + '</details>';
+        $('ops').innerHTML = '<div class="spacer">' + html + '</div>';
+        if (editsOpen && $('ops').querySelector('details')) $('ops').querySelector('details').open = true;
+        for (const [id, value] of Object.entries(inputs)) {
+          if ($(id)) { $(id).value = value; $(id).dataset.edited = '1' }
+        }
       }
       $('delivery').innerHTML = j.state === 'done' ? '<button data-play="' + url +
         '/film.mp4">播放成片</button> <a download="film.mp4" href="' + url + '/film.mp4">下载 MP4</a> · <a href="' + url +
@@ -342,25 +392,29 @@
         .message) + '</p>').join('')
     }
     $('jobs').onchange = () => {
-      jid = $('jobs').value;
-      $('player').hidden = true;
-      $('player').removeAttribute('src');
+      selectJob($('jobs').value);
       refresh().catch(msg)
     };
+    $('ops').oninput = e => { if (e.target.id) e.target.dataset.edited = '1' };
     $('brief').onsubmit = async e => {
       e.preventDefault();
-      const b = e.submitter;
+      const b = e.submitter || $('brief').querySelector('button');
       b.disabled = true;
       try {
+        const productionBrief = Object.fromEntries(
+          ['audience', 'objective', 'channel'].map(key => [key, $(key).value.trim()]).filter(([, value]) => value)
+        );
         const result = await api('/api/jobs', {
           title: $('title').value,
           script: $('script').value,
           requirements: $('requirements').value,
           seconds: Number($('seconds').value),
           mode: $('mode').value,
-          music: $('music').checked
+          music: $('music').checked,
+          render_drafts: $('renderDraft').checked,
+          ...(Object.keys(productionBrief).length ? {production_brief: productionBrief} : {})
         });
-        jid = result.id;
+        selectJob(result.id);
         $('notice').textContent = '';
         await refresh()
       } catch (e) {
@@ -374,6 +428,7 @@
       if (b.dataset.play) return play(b.dataset.play);
       const op = b.dataset.op;
       if (!op) return;
+      const target = jid;
       const body = op === 'approve' ? {
         code: Number(b.dataset.code)
       } : op === 'batch' ? {
@@ -385,11 +440,16 @@
       } : {};
       b.disabled = true;
       try {
-        await api('/api/jobs/' + jid + '/' + op, body);
+        await api('/api/jobs/' + target + '/' + op, body);
+        if (target !== jid) return;
+        if (op === 'revise' && $('note')?.value === body.note) {
+          $('note').value = '';
+          delete $('note').dataset.edited
+        }
         $('notice').textContent = '';
         await refresh()
       } catch (e) {
-        msg(e)
+        if (target === jid) msg(e)
       } finally {
         b.disabled = false
       }

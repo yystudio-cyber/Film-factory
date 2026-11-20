@@ -87,11 +87,11 @@
   </section>
   <section>
     <h2>绑定已验证的工作流</h2>
-    <p>从 ComfyUI 的成功历史选择一条正片任务，或导入该工作流的 API 格式 JSON。逐条保存文生、图生和首尾帧三种路由。原图里的 LoRA、采样器和两阶段设置会随图保存。</p>
+    <p>从 ComfyUI 的成功历史选择一条任务，或导入该工作流的 API 格式 JSON。逐条保存文生、图生和首尾帧三种路由。正片使用已验证的两阶段图。要先审动作草稿，再为所需路由单独绑定半分辨率单阶段图。</p>
     <button id="load">读取最近的 ComfyUI 任务</button><select id="hist" aria-label="历史任务"></select><button
       id="pick">使用选中任务</button>
     <p>或选择 API JSON <input type="file" id="file" accept=".json"></p>
-    <div id="editor" hidden><label>路由 <select id="route">
+    <div id="editor" hidden><label>制作档位 <select id="tier"><option value="master">正片 · 两阶段</option><option value="draft">动作草稿 · 单阶段</option></select></label><label>路由 <select id="route">
           <option>T2V</option>
           <option>I2V</option>
           <option>FLF</option>
@@ -195,13 +195,14 @@
         if (s.value)(bindings[s.value] ??= []).push(s.dataset.target);
       const r = await api('/api/bind', {
         route: $('route').value,
+        tier: $('tier').value,
         profile: {
           graph,
           bindings,
           output: $('out').value
         }
       });
-      $('result').textContent = r.saved + ' 工作流已保存。'
+      $('result').textContent = r.saved + (r.tier === 'draft' ? ' 草稿' : ' 正片') + '工作流已保存。'
     });
 
   </script>

@@ -1,5 +1,14 @@
 """Trace source text to executable checks, preserving the author's wording."""
 import re
+import unicodedata
+
+
+LITERAL_CHANNELS = {
+    "title":r"标题|片名|片尾大字|定版文案|title",
+    "caption":r"字幕|caption|subtitle",
+    "dialogue":r"台词|对白|对话|dialogue|spoken line",
+    "narration":r"旁白|画外音|解说词|narration|voiceover",
+}
 
 
 def source_units(spec):
@@ -14,6 +23,9 @@ def source_units(spec):
                 if text:
                     index += 1
                     units.append({"id": f"{prefix}{index:03}", "text": text})
+    for key,label in (("audience","受众"),("objective","目的"),("channel","渠道")):
+        if key in spec.get("production_brief",{}):
+            units.append({"id":"简报-"+label,"text":label+"："+spec["production_brief"][key]})
     return units
 
 
@@ -69,10 +81,133 @@ def obligations(ledger, idx):
             for row in ledger for c in row["checks"] if c["shot"] == idx]
 
 
+def _literal_match(expected, actual, spoken=False):
+    if not isinstance(actual,str):
+        return False
+    if spoken:
+        # ASR punctuation and case may differ. Keep word boundaries and individual
+        # CJK characters so "we can" does not match the beginning of "we cannot".
+        def tokens(value):
+            return re.findall(r"[a-z0-9]+|[^\W_]", unicodedata.normalize("NFKC",value).casefold())
+        needle, haystack = tokens(expected), tokens(actual)
+        return bool(needle) and any(haystack[i:i+len(needle)] == needle for i in range(len(haystack)-len(needle)+1))
+    left = r"(?<![A-Za-z0-9])" if expected[:1].isascii() and expected[:1].isalnum() else ""
+    right = r"(?![A-Za-z0-9])" if expected[-1:].isascii() and expected[-1:].isalnum() else ""
+    return bool(expected) and bool(re.search(left + re.escape(expected) + right, actual))
+
+
+_QUOTES = r'“[^”]*”|「[^」]*」|『[^』]*』|《[^》]*》|"[^"]*"'
+_REPLACE = r"改成|改为|替换为|替换成|换成|换为|改叫|change\b.*?\bto|replace\b.*?\bwith"
+
+
+def _literal_revision(note, channel, expected, sole, unique_channel):
+    """A shot-scoped human text edit may change a lock; ordinary staging edits cannot."""
+    alias = LITERAL_CHANNELS[channel]
+    # Split editorial instructions outside quoted text; a literal may itself contain punctuation.
+    clauses = re.findall(rf'(?:{_QUOTES}|[^；;。\n“「『《"]+)+',note)
+    for clause in reversed(clauses):
+        quotes = list(re.finditer(_QUOTES,clause))
+        words = re.sub(_QUOTES,"",clause)
+        if re.search(r"不要|不得|不许|不能|不用|无需|别|禁止|do not|don't|keep unchanged",words,re.I):
+            continue
+        labels = {key for key,pattern in LITERAL_CHANNELS.items() if re.search(pattern,words,re.I)}
+        named = any(m[0][1:-1] == expected for m in quotes)
+        if (labels and labels != {channel}) or not (named or (sole and labels == {channel})):
+            continue
+        if not labels and not unique_channel:
+            continue
+        if re.search(r"颜色|字体|字号|字重|位置|音量|音调|音色|语速|语气|节奏|样式|大小|"
+                     r"color|font|size|position|pitch|volume|speed|style|timing",words,re.I):
+            continue
+        replace = re.search(_REPLACE,clause,re.I)
+        if replace:
+            scope = re.sub(_QUOTES,"",clause[:replace.end()])
+            if labels and not re.search(alias,scope,re.I):
+                continue
+            if labels:
+                # The object must be the wording itself, e.g. 标题从“旧”改为“新”.
+                # "change the title background to blue" changes no locked words.
+                after_label = re.split(alias,scope,flags=re.I)[-1]
+                if not re.fullmatch(r"\s*(?:(?:的文字|的内容|的文案|文字|文案|里边的|里的|中的|"
+                                    r"从|由|改成|改为|替换为|替换成|换成|换为|改叫|"
+                                    r"wording|text|from|to|with)\s*)*",after_label,re.I):
+                    continue
+            old_quotes = [q[0][1:-1] for q in quotes if q.end() <= replace.end()]
+            if old_quotes and expected not in old_quotes:
+                continue
+            tail = clause[replace.end():].strip(" ：:，,")
+            target = re.match(rf'(?:为\s*)?({_QUOTES})(?=$|[.!！。，,\s])', tail)
+            if target:
+                return "replace",target[1][1:-1]
+            if tail and not re.search(r"[，“”「」；,。]|\b(?:and|but)\b", tail,re.I):
+                # Unquoted exact-copy form: 『标题改为：杭州夜研』.
+                if clause[replace.end():].lstrip().startswith(("：",":")):
+                    return "replace",tail
+        if re.search(rf"(?:删除|移除|去掉|取消|删去|remove|delete|omit)\s*(?:本镜|这句|该|the\s+)?(?:{alias})"
+                     r"(?:中的|里的|文字|内容|文案)?[\s.!！]*$",words,re.I):
+            return "remove",""
+        if re.search(rf"(?:(?:改写|重写|简写|缩短|精简|rephrase|rewrite|shorten)\s*(?:本镜|这句|该|the\s+)?"
+                     rf"(?:{alias})|(?:{alias})\s*(?:改短|重写|精简|改写))[\s.!！]*$", words,re.I):
+            return "editor",""
+    return None
+
+
+def _literal_evidence(ledger, timeline):
+    locks = {}
+    for unit in ledger:
+        for check in unit["checks"]:
+            if check.get("literal"):
+                locks.setdefault((check["shot"],check["channel"]),set()).add(check["literal"])
+    evidence = {}
+    for unit in ledger:
+        rows = []
+        for check in unit["checks"]:
+            original = check.get("literal")
+            if not original:
+                continue
+            index,channel = check["shot"],check["channel"]
+            cut = timeline[index-1]
+            if cut["shot"] != index or channel not in LITERAL_CHANNELS:
+                raise ValueError("锁定原文未能关联到采用镜头")
+            expected, action = original, "source"
+            unique_channel = sum(original in values for (n,_),values in locks.items() if n==index)==1
+            revisions = []
+            for entry in cut.get("revision_history",[]):
+                if entry.get("origin") != "user":
+                    continue
+                note = entry["note"]
+                update = _literal_revision(note,channel,expected,len(locks[index,channel])==1,unique_channel)
+                if update:
+                    action,expected = update
+                    revisions.append(note)
+            field = cut.get(channel,"")
+            row = dict(shot=index, code=cut.get("code"), channel=channel, source_literal=original,
+                       expected=expected, adopted=field, rule=action, user_revisions=revisions)
+            if action == "remove":
+                passed = (not field.strip() if len(locks[index,channel])==1
+                          else not _literal_match(original,field))
+            elif action == "editor":
+                passed = bool(field.strip())
+            else:
+                passed = _literal_match(expected,field)
+            if channel == "dialogue":
+                transcript = cut.get("transcript","")
+                row["transcript"] = transcript
+                if action == "remove":
+                    passed = passed and not _literal_match(original,transcript,spoken=True)
+                else:
+                    passed = passed and _literal_match(field if action=="editor" else expected,transcript,spoken=True)
+            row["passed"] = passed
+            rows.append(row)
+        evidence[unit["id"]] = rows
+    return evidence
+
+
 def audit_edit(director, ledger, timeline, picture_review):
     """Ask the text editor to decide from observations, actual titles/lines and source spans."""
-    evidence = [{k: s.get(k) for k in ("shot","code","observations","checks","transcript","narration","title",
-                 "caption","seconds","changes","start","sound")} for s in timeline]
+    evidence = [{k: s.get(k) for k in ("shot","code","observations","checks","transcript","dialogue","narration","title",
+                 "caption","seconds","changes","revision_history","start","sound")} for s in timeline]
+    literal_evidence = _literal_evidence(ledger,timeline)
     rows = []
     for i in range(0,len(ledger),16):
         group = ledger[i:i+16]
@@ -80,9 +215,13 @@ def audit_edit(director, ledger, timeline, picture_review):
 visual master audit. Distinguish intended sound from measured audio and observed image content.
 Check literal lines, titles, order, causal connections, character and location. User-requested
 later revisions override the initial text only where explicit. Cite shot numbers and concrete
+evidence. literal_checks records exact matches from the adopted take. For rule=editor, evaluate
+the wording against the referenced user revision and all unchanged obligations. An editorial
+repair request cannot authorize replacing source text. Preserve a literal failure. Cite
 evidence; fail missing evidence for required story events. For each unit in input order return
 {"rows":[{"id":"unit ID","passed":boolean,"notes":"中文证据或具体修复意见","repair_shot":integer or null}]}.""",
-            {"units":group,"evidence":evidence,"visual_master":picture_review}, tokens=4600, task="成片剧情总审")
+            {"units":group,"evidence":evidence,"visual_master":picture_review,
+             "literal_checks":{u["id"]:literal_evidence[u["id"]] for u in group}}, tokens=4600, task="成片剧情总审")
         batch = result.get("rows")
         if not isinstance(batch,list) or [r["id"] for r in batch] != [u["id"] for u in group]:
             raise ValueError("成片剧情总审遗漏原文条目")
@@ -92,5 +231,13 @@ evidence; fail missing evidence for required story events. For each unit in inpu
             idx = row.get("repair_shot")
             if idx is not None and (type(idx) is not int or not 1<=idx<=len(timeline)):
                 raise ValueError("成片返工指向无效镜号")
+            row["literal_checks"] = literal_evidence[row["id"]]
+            failures = [r for r in row["literal_checks"] if not r["passed"]]
+            if failures:
+                row["editor_notes"] = row["notes"]
+                row["passed"], row["repair_shot"] = False, failures[0]["shot"]
+                row["notes"] = "；".join(
+                    f'S{r["shot"]:02} {r["channel"]} 逐字验收失败，采用版本与要求不符，请核对“{r["expected"] or r["source_literal"]}”'
+                    for r in failures)
         rows.extend(batch)
     return rows

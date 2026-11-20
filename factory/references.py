@@ -42,3 +42,23 @@ def snapshot(folder, catalog, names):
 
 def used(shot):
     return [shot["start"],shot["end"],shot["overlay"],*shot.get("anchors",[])]
+
+
+def cast_anchors(selected, index, subjects):
+    """First visually identified appearance of a returning character on the selected cut."""
+    needed = set(subjects)
+    found = []
+    for n,take in sorted(selected.items()):
+        if not needed or n>=index:
+            break
+        directory = Path(take["path"])
+        review = directory/"review.json"
+        for subject in read(review).get("subjects",[]) if review.is_file() else []:
+            name = subject["name"]
+            if name in needed:
+                frame = directory/f"frame-{subject['frame']}.jpg"
+                if not frame.is_file():
+                    raise ValueError(f"角色 {name} 的已采用定妆依据缺失：{frame.name}")
+                found.append((name, f"C{take['code']:03}",frame))
+                needed.remove(name)
+    return found

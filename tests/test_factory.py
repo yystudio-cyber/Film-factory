@@ -72,6 +72,10 @@ class Environment(unittest.TestCase):
                     image=Image.open(io.BytesIO(base64.b64decode(content[1]["image_url"]["url"].split(",")[1])))
                     lookup={ImageColor.getrgb(n):n for n in ("red","green","blue","yellow")}
                     value={"colors":[lookup[image.getpixel((x,32))] for x in (16,96)]}
+                elif "Act as cinematographer" in instruction or "Act as sound editor" in instruction:
+                    from factory.crew import ROLES
+                    role = "camera" if "Act as cinematographer" in instruction else "sound"
+                    value = {"rows":[{"id":s["id"],**{k:"工位执行单" for k in ROLES[role][1]}} for s in data["shots"]]}
                 elif "Act as script supervisor" in instruction:
                     value={"rows":[{"id":u["id"],"covered":not owner.missing,"notes":"覆盖说明",
                                     "checks":[{"shot":i,"expect":"工位镜头","literal":"","channel":"visual"} for i in (1,2,3)]}
@@ -100,10 +104,12 @@ class Environment(unittest.TestCase):
             def do_GET(self):
                 if self.path.startswith("/history/"):
                     pid = self.path.split("/")[-1]
-                    return self.reply({pid:{"outputs":{"2":{"videos":[{"filename":"fixture.mp4","type":"output"}]}},
+                    graph=owner.submitted[int(pid)-1]
+                    media_file="draft.mp4" if graph["1"]["class_type"]=="FixtureDraft" else "fixture.mp4"
+                    return self.reply({pid:{"outputs":{"2":{"videos":[{"filename":media_file,"type":"output"}]}},
                                              "status":{"status_str":"success"}}})
                 if self.path.startswith("/view?"):
-                    return self.reply(clip.read_bytes())
+                    return self.reply(((root/"draft.mp4") if "filename=draft.mp4" in self.path else clip).read_bytes())
                 if self.path.startswith("/v1/audio?"):
                     return self.reply(score.read_bytes())
                 self.reply({})
@@ -162,6 +168,76 @@ class Environment(unittest.TestCase):
         request(self.url+"/api/jobs/"+jid+"/film.mp4",dest=saved)
         self.assertEqual(saved.read_bytes(),(folder/"film.mp4").read_bytes())
         self.assertEqual(len(list((folder/"takes").glob("*/rejected.json"))),1)
+
+    def test_draft_failure_skips_master_and_publishes_only_full_resolution(self):
+        from factory import drafts
+        root = self.cfg["data"].parent
+        media.ff("-i",root/"fixture.mp4","-vf","scale=160:96","-c:a","copy",root/"draft.mp4")
+        for route in graphs.ROUTES:
+            profile = graphs.load_profile(self.cfg,route)
+            profile["graph"]["1"]["class_type"] = "FixtureDraft"
+            request(self.url+"/api/bind",{"tier":"draft","route":route,"profile":profile})
+        jid=request(self.url+"/api/jobs",dict(title="预演",script="三个镜头",requirements="工作站",
+                    seconds=6,music=False,mode="auto",render_drafts=True,production_brief={"audience":"内部员工"}))["id"]
+        self.execute(jid)
+        classes=[g["1"]["class_type"] for g in self.submitted]
+        timings=request(self.url+"/api/monitor/"+jid)["production_times"]
+        self.assertEqual(timings["picture"]["calls"],3)
+        self.assertEqual(timings["draft"]["calls"],4)
+        self.assertEqual(classes,["FixtureDraft","FixtureDraft","Fixture","FixtureDraft","Fixture","FixtureDraft","Fixture"])
+        for i in (2,4,6):
+            self.assertEqual(self.submitted[i]["1"]["inputs"]["seed"],self.submitted[i-1]["1"]["inputs"]["seed"])
+        snapshot=request(self.url+f"/api/storyboard/{jid}")
+        movie=next(m for m in snapshot["shots"][0]["movies"] if m["kind"]=="draft")
+        preview=root/"result.mp4"
+        request(self.url+movie["url"],dest=preview)
+        self.assertEqual(media.stream(media.probe(preview),"video")["width"],160)
+        release=self.store.delivery_dir(jid)
+        self.assertEqual(media.stream(media.probe(release/"film.mp4"),"video")["width"],320)
+        self.assertFalse(read(release/"acceptance.json")["audio_mix"]["score"])
+        self.assertIsNone(drafts.latest(self.store.root/jid,1,epoch=1))
+
+    def test_score_and_picture_overlap_without_blocking_manual_gate(self):
+        self.reject_first=False
+        started=threading.Event()
+        picture=threading.Event()
+        original_music=media.music
+        original_render=graphs.render
+        def score(*args):
+            started.set()
+            if not picture.wait(8):
+                raise AssertionError("配乐等待时未启动视频")
+            return original_music(*args)
+        def render(*args):
+            self.assertTrue(started.wait(8))
+            picture.set()
+            return original_render(*args)
+        jid=self.new()
+        with patch("factory.engine.media.music",side_effect=score), patch("factory.graphs.render",side_effect=render):
+            self.execute(jid)
+        self.assertEqual(self.store.job(jid)["state"],"done")
+        review=self.new("review")
+        with patch("factory.engine.media.music",side_effect=AssertionError("逐镜模式提前配乐")):
+            self.execute(review)
+        self.assertEqual(self.store.job(review)["state"],"review")
+
+    def test_late_narration_is_timed_before_any_gpu_submission(self):
+        director=self.engine.director
+        calls=[]
+        def plan(spec,refs):
+            calls.append(dict(spec))
+            shot=dict(beat="工位",seconds=2,frames=48,start="",end="",sound="room",dialogue="",
+                      narration="",title="",overlay="")
+            return dict(bible="office",music="",shots=[dict(shot),dict(shot),dict(shot,narration="这句放在最后一镜。")])
+        with patch.object(director,"plan",side_effect=plan), patch("factory.media.music") as composer, \
+                patch("factory.media.prepare_voice",side_effect=media.VoiceTimingError(5.2,2)):
+            with self.assertRaisesRegex(ValueError,"送入 GPU 前"):
+                self.execute(self.new())
+        self.assertEqual(len(calls),2)
+        self.assertEqual(calls[-1]["narration_timing_corrections"][0]["shot"],3)
+        self.assertIn("这句放在最后一镜",calls[-1]["narration_timing_corrections"][0]["line"])
+        self.assertFalse(self.submitted)
+        composer.assert_not_called()
 
     def test_gate_variants_revision_stop_restart_batch(self):
         self.reject_first=False

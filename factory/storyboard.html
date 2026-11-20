@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>分镜放映室 · 制片工厂</title>
+  <link rel="stylesheet" href="/storyboard.css">
+  <script type="module" src="/storyboard.js"></script>
+</head>
+<body>
+  <header>
+    <h1>分镜放映室</h1>
+    <nav aria-label="制片工厂"><a id="console" href="/">制作任务</a><a id="monitor" href="/monitor">生产监视器</a></nav>
+  </header>
+  <main>
+    <div class="projectbar">
+      <label>选择影片 <select id="jobs"></select></label>
+      <div><span id="status" aria-live="polite">正在读取制作任务</span> <a id="master" hidden target="_blank" rel="noopener">播放交付母版 ↗</a></div>
+    </div>
+    <p id="error" hidden role="alert"></p>
+    <section class="panel" aria-label="分镜播放器">
+      <div class="panelhead"><h2 id="filmTitle">镜头预演</h2><label>连续播放来源
+        <select id="priority"><option value="conform">优先已采用片段</option><option value="draft">优先渲染草稿</option><option value="still">仅分镜与参考图</option></select>
+      </label></div>
+      <div id="screen">
+        <video id="clip" playsinline preload="metadata" hidden></video>
+        <img id="still" alt="" hidden>
+        <div id="slate"><strong id="slateTitle">等待分镜</strong><p id="slateText">导演产出分镜后可在这里检查节奏。</p></div>
+        <div id="screenTag" hidden></div>
+      </div>
+      <div class="transport">
+        <button id="prev" disabled aria-label="上一镜">上一镜</button>
+        <button id="play" class="primary" disabled>连续播放</button>
+        <button id="next" disabled aria-label="下一镜">下一镜</button>
+        <output id="timecode">00:00:00 / 00:00:00</output>
+        <label class="soundToggle"><input id="sound" type="checkbox" checked> 镜内声音</label>
+      </div>
+      <label class="sr" for="scrub">按帧跳转</label>
+      <input type="range" id="scrub" min="0" max="0" value="0" step="1" disabled>
+      <div id="strip" aria-label="按时长排列的镜头"></div>
+    </section>
+    <section class="panel" aria-labelledby="shotTitle">
+      <div class="panelhead"><h2 id="shotTitle">镜头详情</h2><span id="range"></span></div>
+      <p id="scene"></p>
+      <div class="sourceRow"><label>本镜预览来源 <select id="source" disabled></select></label><button id="approve" class="primary" hidden>采用当前候选</button></div>
+      <div id="references" class="refs"></div>
+      <div id="departments" class="cards" hidden></div>
+      <div class="cards"><div><h3>声音与后期</h3><dl id="post"></dl></div><div><h3>原文验收项</h3><ul id="checks"></ul></div></div>
+    </section>
+  </main>
+</body>
+</html>

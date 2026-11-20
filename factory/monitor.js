@@ -23,6 +23,8 @@ const stages = [
   ["成片验收", /总审/]
 ];
 let jid = new URLSearchParams(location.search).get("job") || "";
+if (!/^[a-f0-9]{32}$/.test(jid)) jid = "";
+let olderJob = null;
 let shot = null,
   generation = 0,
   previousKey = "",
@@ -48,10 +50,10 @@ function report(error) {
 }
 
 function renderAttempts(snap) {
-  const key = JSON.stringify([jid, snap.shot, snap.attempts, snap.coverage]);
+  const design = snap.shots[snap.shot - 1];
+  const key = JSON.stringify([jid, snap.shot, design, snap.attempts, snap.coverage]);
   if (key === previousKey) return;
   previousKey = key;
-  const design = snap.shots[snap.shot - 1];
   const missing = snap.coverage.filter(r => !r.covered);
   const rows = snap.coverage.filter(r => r.checks.some(c => c.shot === snap.shot));
   by("obligations").innerHTML = design ? '<h3>' + fmt(snap.shot) + ' · ' + esc(design.beat) + '</h3><small>' +
@@ -89,19 +91,35 @@ async function refresh() {
   const version = ++generation;
   const jobs = await api("/api/jobs");
   if (version !== generation) return;
-  if (!jobs.some(j => j.id === jid)) jid = jobs[0]?.id || "";
+  if (!jid) jid = jobs[0]?.id || "";
+  if (jid && !jobs.some(j => j.id === jid)) {
+    if (olderJob?.id !== jid) {
+      const detail = await api("/api/jobs/" + jid);
+      if (version !== generation) return;
+      olderJob = {id: detail.id, spec: detail.spec.title, state: detail.state};
+    }
+    jobs.unshift(olderJob);
+  }
   by("queue").innerHTML = jobs.map(j => '<button data-job="' + j.id + '" class="' + (j.id === jid ? 'active' : '') +
     '">' + esc(j.spec) + '<small>' + stateNames[j.state] + '</small></button>').join("") || "暂无任务。";
   by("clock").textContent = "本机时间 " + new Date().toLocaleTimeString() + " · 每 3 秒更新";
   if (!jid) return;
   const snap = await api("/api/monitor/" + jid + (shot ? "?shot=" + shot : ""));
   if (version !== generation) return;
+  by("console").href = "/?job=" + jid;
+  by("storyboard").href = "/storyboard?job=" + jid;
   by("film").textContent = jobs.find(j => j.id === jid).spec;
   by("state").textContent = stateNames[snap.state];
   by("detail").textContent = snap.detail;
   const n = Object.keys(snap.selected).length;
   by("meter").style.width = (snap.shots.length ? 100 * n / snap.shots.length : 0) + "%";
   by("count").textContent = n + " / " + snap.shots.length + " 镜已采用";
+  const measured = Object.entries({draft:"动作草稿",picture:"正片",score:"配乐"}).flatMap(([key, label]) => {
+    const record = snap.production_times?.[key];
+    return record ? [label + " " + record.calls + " 次 / " + (record.seconds / 60).toFixed(1) + " 分钟"] : [];
+  });
+  by("serviceTimes").hidden = !measured.length;
+  by("serviceTimes").textContent = "已完成工序耗时（含服务等待）　" + measured.join("　");
   by("steps").innerHTML = stages.map(([name, pattern]) => {
     const ev = snap.stages.find(x => pattern.test(x.title));
     return '<span class="' + (ev?.state || "") + '">' + name + ' · ' + (ev ? stateNames[ev.state] : "—") +
@@ -118,7 +136,8 @@ async function refresh() {
   if (snap.technical) by("verdict").innerHTML = '<p>' + snap.technical.width + ' × ' + snap.technical.height + ' · ' +
     snap.technical.fps + ' fps · ' + snap.technical.frames +
     ' 帧　' + (snap.state === 'done' ? '<a href="/api/jobs/' + jid + '/film.mp4" target="_blank">播放成片</a>' : '总审退回') +
-    '</p>' + snap.source_verdicts.map(v => '<p>' + esc(v.id) + ' · ' + esc(v.notes) + '</p>').join("");
+    '</p>' + (snap.audio_mix?.encoded ? '<p>成片声音　' + esc(snap.audio_mix.encoded.integrated_lufs ?? "静音") +
+    ' LUFS　' + esc(snap.audio_mix.encoded.true_peak_dbtp ?? "静音") + ' dBTP</p>' : '') + snap.source_verdicts.map(v => '<p>' + esc(v.id) + ' · ' + esc(v.notes) + '</p>').join("");
 }
 by("queue").onclick = e => {
   const b = e.target.closest("[data-job]");
@@ -162,7 +181,8 @@ by("submit").onclick = async () => {
         requirements: by("brief").value,
         seconds: Number(by("seconds").value),
         mode: "auto",
-        music: by("music").checked
+        music: by("music").checked,
+        render_drafts: by("batchDraft").checked
       });
     }
     if (!films.length) throw Error("请先选择剧本文件或 JSON 清单");

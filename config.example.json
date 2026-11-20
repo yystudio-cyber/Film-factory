@@ -11,6 +11,7 @@
   "font": "C:/Windows/Fonts/msyh.ttc",
   "attempts": 3,
   "threshold": 4,
+  "parallel_score": true,
   "text_provider": "deepseek",
   "ds_base": "https://api.deepseek.com",
   "ds_model": "deepseek-flash",

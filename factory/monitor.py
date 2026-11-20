@@ -1,5 +1,6 @@
 from pathlib import Path
 from .common import read
+from . import storyboard
 
 
 def optional(folder, filename, default=None):
@@ -19,7 +20,8 @@ def snapshot(store, jid, shot):
     selected = {t["shot"]:t["code"] for t in takes.values() if t["selected"]}
     if shot is None:
         shot = (stages[0]["shot"] if stages else 0) or job["gate"] or 1
-    designs = plan.get("shots",[])
+    versions = storyboard.eligible_versions(takes.values())
+    designs = [shot for shot, _ in storyboard.current_designs(store, jid, plan, versions)]
     if not 1 <= shot <= max(1,len(designs)):
         raise ValueError("镜号不在计划内")
     attempts = []
@@ -34,7 +36,8 @@ def snapshot(store, jid, shot):
                          "rejection":optional(directory,"rejected.json"),
                          "frames":[i for i in range(5) if (directory/f"frame-{i}.jpg").is_file()]})
     # A rerender must not show an earlier master's verdict as the current result.
-    audit = optional(folder,"acceptance.json",{}) if job["state"]=="done" or (job["state"]=="failed" and "整片剧本验收未通过" in job["detail"]) else {}
+    audit = optional(store.delivery_dir(jid) or folder,"acceptance.json",{}) if job["state"]=="done" or (job["state"]=="failed" and "整片剧本验收未通过" in job["detail"]) else {}
     return {"state":job["state"],"detail":job["detail"],"shot":shot,"selected":selected,
             "shots":designs,"stages":stages,"attempts":attempts,"coverage":plan.get("coverage",[]),
-            "technical":audit.get("technical"),"source_verdicts":audit.get("source_verdicts",[])}
+            "production_times":audit.get("production_times") or store.production_times(jid),
+            "audio_mix":audit.get("audio_mix"),"technical":audit.get("technical"),"source_verdicts":audit.get("source_verdicts",[])}

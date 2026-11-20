@@ -6,7 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import graphs, monitor, setup
+from . import drafts, graphs, monitor, setup, storyboard
 from .common import assets, read, write
 from .engine import Factory
 from .store import Store
@@ -25,6 +25,17 @@ def specification(body):
         raise ValueError("目标时长为 2–600 整秒")
     if spec["mode"] not in {"auto","review"} or type(spec["music"]) is not bool:
         raise ValueError("无效的生产模式或配乐设置")
+    if type(body.get("render_drafts",False)) is not bool:
+        raise ValueError("动态草稿选项须为布尔值")
+    if body.get("render_drafts"):
+        spec["render_drafts"] = True
+    brief = body.get("production_brief",{})
+    if not isinstance(brief,dict) or brief.keys()-{"audience","objective","channel"} or any(
+            not isinstance(v,str) or len(v)>600 for v in brief.values()):
+        raise ValueError("制片简报接受受众、目的与渠道，每项限 600 字")
+    brief = {k:v.strip() for k,v in brief.items() if v.strip()}
+    if brief:
+        spec["production_brief"] = brief
     return spec
 
 
@@ -78,7 +89,10 @@ def handler(cfg, store):
             job["spec"] = json.loads(job["spec"])
             job["plan"] = read(folder/"plan.json") if (folder/"plan.json").is_file() else None
             job["events"] = store.history(jid)
-            job["takes"] = [{k:v for k,v in t.items() if k != "path"} for t in store.takes(jid)]
+            takes = store.takes(jid)
+            job["takes"] = [{k:v for k,v in t.items() if k != "path"} for t in takes]
+            designs = storyboard.current_designs(store, jid, job["plan"] or {}, storyboard.eligible_versions(takes))
+            job["shot_summaries"] = [{"beat": shot.get("beat", ""), "seconds": shot["seconds"]} for shot, _ in designs]
             return job
 
         def do_GET(self):
@@ -89,6 +103,18 @@ def handler(cfg, store):
                 if path in {"/monitor","/monitor.js","/monitor.css"}:
                     name = "monitor.html" if path == "/monitor" else path[1:]
                     return self.file(Path(__file__).with_name(name))
+                if path in {"/storyboard","/storyboard.js","/storyboard.css"}:
+                    return self.file(Path(__file__).with_name("storyboard.html" if path=="/storyboard" else path[1:]))
+                match = re.fullmatch(r"/api/storyboard/([a-f0-9]{32})(?:/refs/([a-f0-9]{64}\.(?:png|jpe?g)))?",path)
+                if match:
+                    if not match[2]:
+                        return self.respond(storyboard.snapshot(store,match[1]))
+                    ref = storyboard.reference_file(store,match[1],match[2])
+                    return self.file(ref) if ref else self.send_error(404)
+                match = re.fullmatch(r"/api/drafts/([a-f0-9]{32})/(S\d{2,3}-[a-f0-9]{12}\.mp4)",path)
+                if match:
+                    video = drafts.video(store.root/match[1],match[2])
+                    return self.file(video) if video else self.send_error(404)
                 match = re.fullmatch(r"/api/monitor/([a-f0-9]{32})",path)
                 if match:
                     selected = parse_qs(urlsplit(self.path).query).get("shot")
@@ -121,8 +147,10 @@ def handler(cfg, store):
                         take = next((x for x in store.takes(jid) if x["code"]==int(code)),None)
                         if take:
                             return self.file(Path(take["path"])/"cut.mp4")
-                    elif store.job(jid)["state"]=="done":
-                        return self.file(store.root/jid/artifact)
+                    else:
+                        release = store.delivery_dir(jid)
+                        if release:
+                            return self.file(release/artifact)
                 self.send_error(404)
             except (BrokenPipeError, ConnectionResetError):
                 return
@@ -157,8 +185,12 @@ def handler(cfg, store):
                     if route not in graphs.ROUTES:
                         raise ValueError("无效工作流")
                     profile = graphs.validate(body["profile"],route)
-                    write(cfg["workflows"]/(route+".json"),profile)
-                    return self.respond({"saved":route})
+                    tier = body.get("tier","master")
+                    if tier not in {"master","draft"}:
+                        raise ValueError("请选择正片或动态草稿")
+                    selected = drafts.settings(cfg) if tier=="draft" else cfg
+                    write(selected["workflows"]/(route+".json"),profile)
+                    return self.respond({"saved":route,"tier":tier})
                 m = re.fullmatch(r"/api/jobs/([a-f0-9]{32})/(stop|resume|approve|revise|batch)", self.path)
                 if m:
                     store.command(m[1],m[2],**body)
@@ -184,3 +216,4 @@ def serve(cfg, port):
         finally:
             engine.shutdown.set()
             http.server_close()
+            thread.join()

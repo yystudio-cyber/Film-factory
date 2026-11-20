@@ -10,7 +10,7 @@
 </head>
 
 <body>
-  <header><a href="/">← 制片工厂</a><strong>生产监视器</strong><a href="/setup">工作站接入</a></header>
+  <header><a id="console" href="/">← 制片工厂</a><strong>生产监视器</strong><a id="storyboard" href="/storyboard">分镜放映室</a><a href="/setup">工作站接入</a></header>
   <main>
     <div class="bar">
       <div>
@@ -24,6 +24,7 @@
       <div class="split"><label>每部默认时长（秒）<input type="number" id="seconds" value="60" min="2"
             max="600"></label><label>共同制作要求<input id="brief" placeholder="例如：写实、保留原台词、片尾叠字"></label></div>
       <label><input type="checkbox" id="music" checked> 生成配乐</label>
+      <label><input type="checkbox" id="batchDraft"> TXT / Markdown 剧本先生成动作草稿</label>
       <p id="filesNote"></p><button id="submit">提交所选影片</button>
     </section>
     <section>
@@ -44,6 +45,7 @@
           <p id="detail"></p>
           <div class="meter"><i id="meter"></i></div>
           <p id="count"></p>
+          <p id="serviceTimes" hidden></p>
           <div id="steps"></div>
         </section>
         <section>
