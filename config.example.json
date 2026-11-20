@@ -1,0 +1,14 @@
+{
+  "data": "D:/ai/film-factory/runs",
+  "assets": "D:/ai/film-factory/assets",
+  "workflows": "workflows",
+  "comfy": "http://127.0.0.1:8188",
+  "ace": "http://127.0.0.1:8002",
+  "llm": "https://cn-beijing.maas.qianwenaiapi.com/compatible-mode/v1",
+  "model": "qwen3-vl-plus",
+  "width": 1920,
+  "height": 1080,
+  "font": "C:/Windows/Fonts/msyh.ttc",
+  "attempts": 3,
+  "threshold": 4
+}

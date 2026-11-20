@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>制片工厂</title>
+  <style>
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0;
+      background: #f5f4ef;
+      color: #1c2425;
+      font: 15px/1.55 "Inter", "Microsoft YaHei", sans-serif
+    }
+
+    header {
+      background: #172626;
+      color: white;
+      padding: 18px max(5vw, 20px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between
+    }
+
+    header strong {
+      font-size: 19px
+    }
+
+    header a {
+      color: #f1e4b8
+    }
+
+    main {
+      max-width: 1220px;
+      margin: 32px auto;
+      padding: 0 22px;
+      display: grid;
+      grid-template-columns: minmax(300px, .8fr) minmax(390px, 1.3fr);
+      gap: 24px
+    }
+
+    section {
+      background: #fffefa;
+      border: 1px solid #d9dbd1;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 18px
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0 0 14px
+    }
+
+    h1 {
+      font-size: 28px
+    }
+
+    h2 {
+      font-size: 20px
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin: 12px 0 4px
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+      font: inherit
+    }
+
+    input:not([type=checkbox]),
+    textarea,
+    select {
+      width: 100%;
+      padding: 8px 10px;
+      background: #fbfbf8;
+      border: 1px solid #bcc4bb;
+      border-radius: 6px
+    }
+
+    textarea {
+      resize: vertical
+    }
+
+    button,
+    .link {
+      padding: 8px 14px;
+      background: #255d50;
+      color: white;
+      border: 0;
+      border-radius: 6px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block
+    }
+
+    button.light {
+      background: #e9eee7;
+      color: #23382f
+    }
+
+    button:hover,
+    .link:hover {
+      filter: brightness(.92)
+    }
+
+    button:disabled {
+      opacity: .5
+    }
+
+    small,
+    .muted {
+      color: #53665c
+    }
+
+    .row {
+      display: flex;
+      gap: 9px;
+      align-items: center;
+      flex-wrap: wrap
+    }
+
+    .row>* {
+      flex: 1
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%
+    }
+
+    td,
+    th {
+      text-align: left;
+      padding: 8px 4px;
+      border-bottom: 1px solid #dedfd7;
+      font-size: 14px
+    }
+
+    video {
+      width: 100%;
+      max-height: 360px;
+      background: #152321;
+      margin: 12px 0
+    }
+
+    #notice {
+      color: #913222;
+      white-space: pre-wrap
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 600
+    }
+
+    ul {
+      padding-left: 20px
+    }
+
+    .ev {
+      font-size: 13px
+    }
+
+    .spacer {
+      margin: 12px 0
+    }
+
+    .line {
+      height: 5px;
+      border-radius: 4px;
+      background: #e2e7de;
+      overflow: hidden
+    }
+
+    .line i {
+      display: block;
+      background: #4e8871;
+      height: 100%
+    }
+
+    a {
+      color: #245d4e
+    }
+
+    @media(max-width:820px) {
+      main {
+        display: block;
+        margin: 16px auto
+      }
+
+      section {
+        padding: 16px
+      }
+    }
+
+  </style>
+</head>
+
+<body>
+  <header><strong>制片工厂</strong><a href="/setup">工作流接入与自检</a></header>
+  <main>
+    <div>
+      <section>
+        <h1>新建影片</h1>
+        <form id="brief"><label for="title">片名</label><input id="title" required placeholder="我在 ECARX 的前行路"><label
+            for="script">剧本</label><textarea id="script" rows="8" required
+            placeholder="粘贴剧本，保留对白、地点与定版文字"></textarea><label for="requirements">制作要求</label><textarea id="requirements"
+            rows="3" required placeholder="风格、受众、必须保留的细节、参考素材文件名"></textarea>
+          <div class="row">
+            <div><label for="seconds">目标时长（秒）</label><input id="seconds" type="number" min="2" max="600" value="60"
+                required></div>
+            <div><label for="mode">生产模式</label><select id="mode">
+                <option value="review">逐镜确认</option>
+                <option value="auto">全自动成片</option>
+              </select></div>
+          </div><label><input type="checkbox" id="music" checked> 生成原创配乐</label><button class="spacer">开始生产</button>
+        </form>
+        <details>
+          <summary>可用参考素材</summary>
+          <p id="assets" class="muted"></p>
+        </details>
+      </section>
+      <section>
+        <h2>制作任务</h2><select id="jobs" aria-label="选择任务"></select>
+      </section>
+    </div>
+    <div>
+      <section>
+        <p id="notice" role="alert"></p>
+        <h2 id="name">制作进度</h2>
+        <div id="progress" class="muted">提交剧本后，可在这里查看分镜、候选片和验收结果。</div>
+        <div id="shots"></div>
+        <div id="ops"></div>
+        <div id="delivery"></div><video id="player" controls hidden></video>
+      </section>
+      <section>
+        <h2>制作记录</h2>
+        <div id="events" class="ev"></div>
+      </section>
+    </div>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id),
+      esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      } [c]));
+    const states = {
+      queued: '排队中',
+      running: '制作中',
+      review: '等待选片',
+      done: '已交付',
+      failed: '待处理',
+      cancelled: '已停止'
+    };
+    let jid = '',
+      lastOps = '',
+      seq = 0;
+    async function api(url, body) {
+      const r = await fetch(url, body === undefined ? {} : {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+      const j = await r.json();
+      if (!r.ok) throw Error(j.error || r.status);
+      return j
+    }
+
+    function msg(e) {
+      $('notice').textContent = e.message || e
+    }
+
+    function play(url) {
+      $('player').hidden = false;
+      $('player').src = url;
+      $('player').play().catch(() => {})
+    }
+    async function refresh() {
+      const turn = ++seq;
+      const list = await api('/api/jobs');
+      if (turn !== seq) return;
+      $('jobs').innerHTML = list.map(j => '<option value="' + j.id + '">' + esc(j.spec) + ' · ' + states[j.state] +
+        '</option>').join('');
+      if (!jid && list.length) jid = list[0].id;
+      if (!jid) return;
+      $('jobs').value = jid;
+      const url = '/api/jobs/' + jid;
+      const j = await api(url);
+      if (turn !== seq) return;
+      const shots = j.plan?.shots || [],
+        chosen = j.takes.filter(t => t.selected);
+      $('name').textContent = j.spec.title;
+      $('progress').innerHTML = '<b>' + states[j.state] + '</b> · ' + esc(j.detail) + '<p>' + chosen.length + ' / ' +
+        shots.length + ' 镜已采用</p><div class="line"><i style="width:' + (shots.length ? chosen.length / shots.length *
+          100 : 0) + '%"></i></div>';
+      $('shots').innerHTML = shots.length ? '<table><tr><th>镜号</th><th>分镜</th><th>候选片</th></tr>' + shots.map((s, i) =>
+        '<tr><td>S' + String(i + 1).padStart(2, '0') + '<br>' + s.seconds + 's</td><td>' + esc(s.beat) +
+        '</td><td>' + j.takes.filter(t => t.shot === i + 1 && t.eligible).map(t =>
+          '<button class="light" data-play="' + url + '/C' + t.code + '.mp4">' + (t.selected ? '✓ ' : '') + 'C' +
+          String(t.code).padStart(3, '0') + '</button>').join(' ') + '</td></tr>').join('') + '</table>' : '';
+      const key = JSON.stringify([jid, j.state, j.gate, j.takes.length, shots.length]);
+      if (key !== lastOps) {
+        lastOps = key;
+        let html = '';
+        if (['running', 'queued', 'review'].includes(j.state)) html +=
+          '<button class="light" data-op="stop">停止生产</button> ';
+        if (['failed', 'cancelled'].includes(j.state)) html += '<button data-op="resume">继续生产</button> ';
+        if (j.state === 'review') html += j.takes.filter(t => t.eligible && t.shot === j.gate).map(t =>
+          '<button data-op="approve" data-code="' + t.code + '">采用 C' + String(t.code).padStart(3, '0') +
+          '</button>').join(' ');
+        if (shots.length) html +=
+          '<details class="spacer"><summary>修改镜头或批量生产</summary><label>镜号</label><input type="number" id="shot" min="1" max="' +
+          shots.length + '" value="' + (j.gate || Math.min(chosen.length + 1, shots.length)) +
+          '"><label>修改意见</label><textarea id="note" placeholder="例如：用 C001 的尾帧衔接，镜头缓慢前移"></textarea><label>候选数量</label><select id="variants"><option>1</option><option>2</option></select><button class="spacer" data-op="revise">优先重制此镜</button><label>从下一待采用镜头连续生产到镜号</label><input id="end" type="number" min="1" max="' +
+          shots.length + '" value="' + shots.length +
+          '"><button class="spacer light" data-op="batch">执行批量</button></details>';
+        $('ops').innerHTML = '<div class="spacer">' + html + '</div>'
+      }
+      $('delivery').innerHTML = j.state === 'done' ? '<button data-play="' + url +
+        '/film.mp4">播放成片</button> <a download="film.mp4" href="' + url + '/film.mp4">下载 MP4</a> · <a href="' + url +
+        '/acceptance.json" target="_blank">验收报告</a> · <a href="' + url + '/timeline.json" target="_blank">剪辑时间线</a>' :
+        '';
+      $('events').innerHTML = j.events.map(e => '<p>' + new Date(e.ts * 1000).toLocaleTimeString() + '　' + esc(e
+        .message) + '</p>').join('')
+    }
+    $('jobs').onchange = () => {
+      jid = $('jobs').value;
+      $('player').hidden = true;
+      $('player').removeAttribute('src');
+      refresh().catch(msg)
+    };
+    $('brief').onsubmit = async e => {
+      e.preventDefault();
+      const b = e.submitter;
+      b.disabled = true;
+      try {
+        const result = await api('/api/jobs', {
+          title: $('title').value,
+          script: $('script').value,
+          requirements: $('requirements').value,
+          seconds: Number($('seconds').value),
+          mode: $('mode').value,
+          music: $('music').checked
+        });
+        jid = result.id;
+        $('notice').textContent = '';
+        await refresh()
+      } catch (e) {
+        msg(e)
+      } finally {
+        b.disabled = false
+      }
+    };
+    document.onclick = async e => {
+      const b = e.target;
+      if (b.dataset.play) return play(b.dataset.play);
+      const op = b.dataset.op;
+      if (!op) return;
+      const body = op === 'approve' ? {
+        code: Number(b.dataset.code)
+      } : op === 'batch' ? {
+        end: Number($('end').value)
+      } : op === 'revise' ? {
+        shot: Number($('shot').value),
+        note: $('note').value,
+        variants: Number($('variants').value)
+      } : {};
+      b.disabled = true;
+      try {
+        await api('/api/jobs/' + jid + '/' + op, body);
+        $('notice').textContent = '';
+        await refresh()
+      } catch (e) {
+        msg(e)
+      } finally {
+        b.disabled = false
+      }
+    };
+    api('/api/assets').then(a => $('assets').textContent = a.join('、') || '将 PNG/JPEG 和同名 .txt 描述放入配置的 assets 目录。')
+      .catch(msg);
+    refresh().catch(msg);
+    setInterval(() => refresh().catch(msg), 3000);
+
+  </script>
+</body>
+
+</html>

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+config.local.json
+workflows/
+runs/
+assets/
+.venv/

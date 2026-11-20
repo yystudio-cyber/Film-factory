@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>工作流接入</title>
+  <style>
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 0 18px;
+      background: #f5f4ef;
+      color: #1d2b25;
+      font: 15px/1.6 "Inter", "Microsoft YaHei", sans-serif
+    }
+
+    section {
+      background: #fffefa;
+      border: 1px solid #ccd1c6;
+      border-radius: 10px;
+      margin: 20px 0;
+      padding: 20px
+    }
+
+    h1,
+    h2 {
+      margin: 8px 0
+    }
+
+    button,
+    select,
+    input {
+      font: inherit;
+      padding: 5px;
+      margin: 4px
+    }
+
+    button {
+      cursor: pointer;
+      color: white;
+      background: #255d50;
+      border: 0;
+      padding: 8px 12px;
+      border-radius: 6px
+    }
+
+    td {
+      border-top: 1px solid #ddd;
+      overflow-wrap: anywhere;
+      padding: 4px
+    }
+
+    a {
+      color: #255d50
+    }
+
+    pre {
+      white-space: pre-wrap
+    }
+
+    #result {
+      font-weight: 600;
+      color: #854128
+    }
+
+    table {
+      width: 100%
+    }
+
+    summary {
+      cursor: pointer
+    }
+
+  </style>
+</head>
+
+<body><a href="/">← 返回制片工厂</a>
+  <h1>工作流接入</h1>
+  <section>
+    <h2>工作站自检</h2><button id="check">检查服务与本地依赖</button>
+    <pre id="checks"></pre>
+  </section>
+  <section>
+    <h2>绑定已验证的工作流</h2>
+    <p>从 ComfyUI 的成功历史选择一条正片任务，或导入该工作流的 API 格式 JSON。逐条保存文生、图生和首尾帧三种路由。原图里的 LoRA、采样器和两阶段设置会随图保存。</p>
+    <button id="load">读取最近的 ComfyUI 任务</button><select id="hist" aria-label="历史任务"></select><button
+      id="pick">使用选中任务</button>
+    <p>或选择 API JSON <input type="file" id="file" accept=".json"></p>
+    <div id="editor" hidden><label>路由 <select id="route">
+          <option>T2V</option>
+          <option>I2V</option>
+          <option>FLF</option>
+        </select></label><label>最终视频保存节点 <select id="out"></select></label>
+      <p>每个动态输入选择一个角色。提示词、帧数和种子必填，图生还需首帧，首尾帧还需尾帧。链接到上游的字段请绑定上游常量。保持校准尺寸时可保留宽高原值。</p>
+      <table>
+        <thead>
+          <tr>
+            <th>节点与字段</th>
+            <th>当前值</th>
+            <th>输入角色</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table><button id="save">保存当前路由</button>
+    </div>
+    <p id="result" role="status"></p>
+  </section>
+  <script>
+    const $ = id => document.getElementById(id),
+      el = (tag, t) => {
+        const x = document.createElement(tag);
+        x.textContent = t;
+        return x
+      };
+    let graph = {};
+    async function api(url, body) {
+      const r = await fetch(url, body === undefined ? {} : {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
+      });
+      const v = await r.json();
+      if (!r.ok) throw Error(v.error || r.status);
+      return v
+    }
+    const guard = fn => async () => {
+      try {
+        $('result').textContent = '';
+        await fn()
+      } catch (e) {
+        $('result').textContent = e.message
+      }
+    };
+    $('check').onclick = guard(async () => {
+      $('checks').textContent = JSON.stringify(await api('/api/doctor'), null, 2)
+    });
+    $('load').onclick = guard(async () => {
+      const rows = await api('/api/history');
+      $('hist').replaceChildren(...rows.filter(x => x.outputs.length).map(x => new Option(x.outputs.join(' / '), x
+        .id)));
+      if (!$('hist').length) $('result').textContent = '历史中没有可选视频，请使用 API JSON。'
+    });
+    const roles = {
+      prompt: '正向提示词',
+      negative: '负向提示词',
+      frames: '总帧数',
+      seed: '随机种子',
+      first: '首帧图像',
+      last: '尾帧图像',
+      width: '生成宽度',
+      height: '生成高度',
+      half_width: '首阶段半宽',
+      half_height: '首阶段半高',
+      fps: '帧率',
+      prefix: '文件前缀'
+    };
+    async function inspect(g) {
+      graph = g.prompt || g;
+      const view = await api('/api/inspect', graph);
+      $('editor').hidden = false;
+      $('out').replaceChildren(...Object.entries(graph).map(([id, n]) => new Option(id + ' · ' + (n._meta?.title || n
+        .class_type), id)));
+      if (view.outputs.length) $('out').value = view.outputs.at(-1);
+      $('rows').replaceChildren();
+      for (const r of view.rows) {
+        const tr = el('tr', '');
+        tr.append(el('td', r.target + ' · ' + r.label), el('td', r.value));
+        const td = el('td', ''),
+          s = el('select', '');
+        s.dataset.target = r.target;
+        s.add(new Option('保留原值', ''));
+        for (const [k, v] of Object.entries(roles)) s.add(new Option(v, k));
+        s.value = r.suggest;
+        td.append(s);
+        tr.append(td);
+        $('rows').append(tr)
+      }
+    }
+    $('pick').onclick = guard(async () => {
+      if (!$('hist').value) throw Error('请选择历史任务');
+      await inspect(await api('/api/history/' + $('hist').value))
+    });
+    $('file').onchange = guard(async () => inspect(JSON.parse((await $('file').files[0].text()).replace(/^\uFEFF/,
+      ''))));
+    $('save').onclick = guard(async () => {
+      const bindings = {};
+      for (const s of $('rows').querySelectorAll('select'))
+        if (s.value)(bindings[s.value] ??= []).push(s.dataset.target);
+      const r = await api('/api/bind', {
+        route: $('route').value,
+        profile: {
+          graph,
+          bindings,
+          output: $('out').value
+        }
+      });
+      $('result').textContent = r.saved + ' 工作流已保存。'
+    });
+
+  </script>
+</body>
+
+</html>
