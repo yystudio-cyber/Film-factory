@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>生产监视器 · 制片工厂</title>
+  <link rel="stylesheet" href="/monitor.css">
+  <script src="/monitor.js" defer></script>
+</head>
+
+<body>
+  <header><a href="/">← 制片工厂</a><strong>生产监视器</strong><a href="/setup">工作站接入</a></header>
+  <main>
+    <div class="bar">
+      <div>
+        <h1>制片现场</h1>
+        <p id="clock">正在读取本机任务</p>
+      </div><button id="batchToggle">批量提交剧本</button>
+    </div>
+    <section id="batch" hidden>
+      <h2>批量制片</h2><label>选择多个剧本文件（TXT / Markdown），或一份影片清单（JSON）<input type="file" id="files" multiple
+          accept=".txt,.md,.json"></label>
+      <div class="split"><label>每部默认时长（秒）<input type="number" id="seconds" value="60" min="2"
+            max="600"></label><label>共同制作要求<input id="brief" placeholder="例如：写实、保留原台词、片尾叠字"></label></div>
+      <label><input type="checkbox" id="music" checked> 生成配乐</label>
+      <p id="filesNote"></p><button id="submit">提交所选影片</button>
+    </section>
+    <section>
+      <h2>工作站资源</h2>
+      <div id="resources">正在读取工作盘、显卡与共享队列</div>
+    </section>
+    <p id="error" role="alert"></p>
+    <div class="layout">
+      <aside>
+        <h2>制作队列</h2>
+        <div id="queue"></div>
+      </aside>
+      <article>
+        <section>
+          <div class="bar">
+            <h2 id="film">影片生产状态</h2><span id="state"></span>
+          </div>
+          <p id="detail"></p>
+          <div class="meter"><i id="meter"></i></div>
+          <p id="count"></p>
+          <div id="steps"></div>
+        </section>
+        <section>
+          <div class="bar">
+            <h2>镜头与剧情</h2><button class="ghost" id="follow">跟随当前镜头</button>
+          </div>
+          <div id="shots"></div>
+          <div id="obligations"></div>
+          <div id="attempts"></div>
+        </section>
+        <section>
+          <h2>执行记录</h2>
+          <div id="trace"></div>
+        </section>
+        <section id="output" hidden>
+          <h2>交付验收</h2>
+          <div id="verdict"></div>
+        </section>
+      </article>
+    </div>
+  </main>
+</body>
+
+</html>

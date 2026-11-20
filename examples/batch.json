@@ -1,0 +1,4 @@
+[
+  {"title":"夜班工位","script":"夜班测试员调暗台灯。片尾出现“明天再试一次”。","requirements":"写实固定机位，保留底噪，定版文字逐字后叠。","seconds":6,"music":false},
+  {"title":"晨间交接","script":"清晨，一只手把交接本放到桌边。下一镜顺着桌边向前，看见接班人接过本子。","requirements":"两个连续镜头，交接本外观保持一致。","seconds":8,"music":true}
+]

@@ -1,22 +1,32 @@
 # Film Factory · 制片工厂
 
-在 Windows 工作站输入剧本、制作要求和目标时长，使用现有 Qwen、ComfyUI/LTX 和 ACE-Step 生成镜头、检查候选、逐镜剪辑并交付 MP4。中文网页提供「全自动成片」和「逐镜确认」。主控使用 Python 标准库与 Pillow，模型继续运行在原服务进程中。
+在 Windows 工作站输入剧本、制作要求和目标时长，使用 DeepSeek 文本导演、Qwen 视觉审片、ComfyUI/LTX 和 ACE-Step 生成镜头、检查候选、逐镜剪辑并交付 MP4。中文网页提供「全自动成片」和「逐镜确认」。主控使用 Python 标准库与 Pillow，模型继续运行在原服务进程中。
+
+[工作站架构、社区调研与故障设计](docs/production-engineering.md) · [工作流接入手册](docs/workstation.md)
+
+**制片窗口**在本机 8766 端口。首页用于提交与逐镜决策，打开 [生产监视器](http://127.0.0.1:8766/monitor) 可批量导入剧本，查看两张显卡、工作盘、共享队列、实际模型执行记录、逐项剧情依据、退回原因和跨镜六帧图。
 
 ## 在你的工作站启动
 
 1. 下载或克隆本仓库到 `D:\ai\Film-factory`，保留原来的 Studio Console。使用原启动方式运行 ComfyUI（8188、GPU1）。要配乐时，启动支持原生 REST API 的 ACE-Step（8002、GPU0）。
-2. 在项目目录打开 PowerShell。运行以下命令，输入供现有 Qwen 接口使用的密钥。启动器首次运行会从示例创建本机配置；工作站需要 Python 3.12+、Pillow 以及 PATH 中的 ffmpeg、ffprobe。
+2. 在项目目录打开 PowerShell。运行以下命令，配置两个服务各自的地址、模型名和密钥。启动器首次运行会从示例创建本机配置；工作站需要 Python 3.12+、Pillow 以及 PATH 中的 ffmpeg、ffprobe。
 3. 打开 <http://127.0.0.1:8766/setup>。分别从 ComfyUI 成功历史或 API JSON 导入三条已校准的**正片**工作流，确认动态输入和最终输出节点。节点号以本机图为准。绑定保存在本地，下次启动可直接生产。详见[接入与验收](docs/workstation.md)。
 
 ```powershell
 cd D:\ai\Film-factory
 $env:FILM_LLM_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'Qwen API Key' -AsSecureString)).Password
+$env:FILM_DS_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'DeepSeek API Key' -AsSecureString)).Password
+# 如使用工作站已有网关，请替换为与该密钥匹配的实际地址与模型 ID。
+$env:FILM_DS_BASE = Read-Host 'DeepSeek OpenAI 兼容 API 基址'
+$env:FILM_DS_MODEL = Read-Host '该网关实际可用的模型 ID'
 .\start.cmd
 ```
 
-默认使用 `D:\ai\venv\Scripts\python.exe`。可通过 `FILM_PYTHON` 指定其他解释器。示例中的 Qwen URL 来自工作站说明；请使用已经验证可用的服务地址。首次配置如需修改 `config.local.json`，修改后重启控制台。剧本、制作要求、参考图及抽帧将发送到配置的 Qwen 端点，渲染素材及成片保存在 D 盘。
+默认使用 `D:\ai\venv\Scripts\python.exe`。可通过 `FILM_PYTHON` 指定其他解释器。示例中的 Qwen URL 来自工作站说明；请使用已经验证可用的服务地址。首次配置如需修改 `config.local.json`，修改后重启控制台。双模型模式下，文本导演收到剧本、要求、分镜与审片文字证据；Qwen 收到用于审片的文本、参考图和抽帧。渲染素材及成片保存在 D 盘。已有 config.local.json 的用户可按新示例配置 text_provider，或设置 FILM_DS_BASE 和 FILM_DS_MODEL。官方直连示例使用 deepseek-flash；代理商模型名以实际账号为准。若网关不支持扩展请求字段，可将 ds_thinking 设为空字符串、ds_json 设为 false，程序仍校验响应。
 
 ## 制作与交付
+
+批量作业在监视器选择多个 TXT/Markdown 文件并填写共同要求、时长和配乐选项；每部需要不同设置时可导入 JSON 数组，例如 [两片清单](examples/batch.json)。一次可提交 1–50 部影片。
 
 在首页填写片名、剧本、制作要求和目标秒数（2–600）。选择「全自动成片」后，合格候选自动进入下一镜。页面默认选择「逐镜确认」，可先看片，选中 C 编号后继续。一次可以提交多部影片，一台工作站同时制作一个任务。
 
@@ -43,4 +53,4 @@ $env:FILM_LLM_KEY = [System.Net.NetworkCredential]::new('', (Read-Host 'Qwen API
 D:\ai\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-测试使用本地 HTTP 服务替代模型推理，使用真实 FFmpeg 媒体。覆盖三类工作流、首尾帧上传、候选重制、门禁、批量、恢复、旧编号保留、精确混音封装及拒绝交付。工作站实机验收检查项见[工作站接入](docs/workstation.md)。系统设计与开源项目筛选见[架构与调研](docs/design.md)。
+双模型与 1080p 集成测试使用本地 HTTP 服务替代模型推理，使用真实 FFmpeg 媒体。覆盖三类工作流、首尾帧上传、候选重制、门禁、批量、恢复、旧编号保留、精确混音封装及拒绝交付。工作站实机验收检查项见[工作站接入](docs/workstation.md)。系统设计与开源项目筛选见[架构与调研](docs/design.md)。

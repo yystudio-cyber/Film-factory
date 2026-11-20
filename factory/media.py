@@ -8,7 +8,7 @@ from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .common import Rejected, canvas, request, run, write
+from .common import read, Rejected, canvas, request, run, write
 
 
 def probe(path, count=False):
@@ -138,17 +138,28 @@ def conform(cfg, src, shot, overlay, directory):
 
 def music(cfg, prompt, seconds, directory, checkpoint):
     base = cfg["ace"].rstrip("/")
-    ticket = request(base + "/release_task", {"prompt": prompt, "lyrics": "[Instrumental]",
-                     "instrumental": True, "audio_duration": max(30, seconds), "thinking": False,
-                     "model": "acestep-v15-turbo", "batch_size": 1, "audio_format": "wav"})
-    tid = ticket["data"]["task_id"]
-    write(directory / "score-ticket.json", {"task_id": tid})
+    receipt = directory/"score-ticket.json"
+    if receipt.exists():
+        stored = read(receipt)
+        if stored.get("base",base)!=base:
+            raise ValueError("待恢复配乐的 ACE-Step 服务地址已更改")
+        tid = stored.get("task_id")
+        if not tid:
+            raise ValueError("ACE-Step 提交回执丢失，请先核对服务端任务，再补录 score-ticket.json 的 task_id")
+    else:
+        write(receipt,{"base":base,"state":"submitting"})
+        ticket = request(base + "/release_task", {"prompt":prompt,"lyrics":"[Instrumental]",
+                         "instrumental":True,"audio_duration":max(30,seconds),"thinking":False,
+                         "model":"acestep-v15-turbo","batch_size":1,"audio_format":"wav"})
+        tid = ticket["data"]["task_id"]
+        write(receipt,{"base":base,"task_id":tid})
     end = time.monotonic() + 3600
     while time.monotonic() < end:
         checkpoint()
         items = request(base + "/query_result", {"task_id_list": [tid]})["data"]
         item = next((row for row in items if row["task_id"] == tid), {})
         if item.get("status") == 2:
+            receipt.replace(directory/("score-failed-"+str(time.time_ns())+".json"))
             raise ValueError("ACE-Step 配乐失败：" + str(item.get("result", ""))[:600])
         if item.get("status") == 1:
             results = item["result"]
@@ -159,7 +170,14 @@ def music(cfg, prompt, seconds, directory, checkpoint):
             file = directory / "score.wav"
             request(base + url.path + "?" + url.query, dest=file, timeout=300)
             if float(probe(file)["format"]["duration"]) < seconds - .05:
+                receipt.replace(directory/("score-short-"+str(time.time_ns())+".json"))
                 raise ValueError("生成的配乐不足片长")
+            stats = subprocess.run(["ffmpeg","-nostdin","-hide_banner","-i",str(file),"-vn","-af",
+                                    "volumedetect","-f","null","-"],capture_output=True,timeout=600)
+            peak = re.search(rb"max_volume:\s*([-\d.]+) dB",stats.stderr)
+            if stats.returncode or not peak or float(peak[1]) < -75:
+                receipt.replace(directory/("score-silent-"+str(time.time_ns())+".json"))
+                raise ValueError("ACE-Step 配乐单轨静音或无法解码")
             return file
         time.sleep(cfg.get("poll_seconds", 2))
     raise TimeoutError("ACE-Step timeout")
@@ -174,7 +192,9 @@ def assemble(clips, score, seconds, directory):
     raw = directory / "mix.pcm"
     with raw.open("wb") as dst:
         for p, duration in clips:
-            dst.write(ff("-i", p, "-vn", "-t", str(duration), "-ac", "2", "-ar", "48000",
+            dst.write(ff("-i", p, "-vn", "-t", str(duration), "-af",
+                         f"afade=t=in:d=0.005,afade=t=out:st={duration-.005:.3f}:d=0.005",
+                         "-ac", "2", "-ar", "48000",
                          "-f", "s16le", "-"))
     args = ["-f", "concat", "-safe", "1", "-i", listing, "-f", "s16le", "-ac", "2", "-ar", "48000", "-i", raw]
     if score:
@@ -219,3 +239,36 @@ def contact_sheets(movie, timeline, folder):
             sheet.save(target,quality=88)
             boards.append(target)
         return boards
+
+
+def temporal_signals(path):
+    """Scan the decoded shot, including intervals between the review thumbnails."""
+    result = subprocess.run(["ffmpeg","-nostdin","-hide_banner","-nostats","-i",str(path),
+                             "-an","-vf","scale=320:-2,blackdetect=d=0.16:pix_th=0.08,"
+                             "freezedetect=n=-55dB:d=0.5","-f","null","-"],
+                            capture_output=True,timeout=300)
+    if result.returncode:
+        raise Rejected("逐帧运动检查无法解码")
+    log = result.stderr.decode("utf-8","replace")
+    return {"black_intervals":[[float(a),float(b)] for a,b in re.findall(
+                r"black_start:([\d.]+) black_end:([\d.]+)", log)],
+            "freeze_events":[{"kind":kind,"second":float(value)} for kind,value in re.findall(
+                r"lavfi\.freezedetect\.freeze_(start|end): ([\d.]+)", log)]}
+
+
+def seam_sheet(previous_cut, current_raw, duration, folder):
+    from PIL import Image, ImageDraw
+    from io import BytesIO
+    sheet = Image.new("RGB",(3*320,2*206),"#18231c")
+    pen = ImageDraw.Draw(sheet)
+    for i, (video, t) in enumerate([(previous_cut,duration-f/24) for f in (8,4,1)] +
+                                    [(current_raw,f/24) for f in (0,3,7)]):
+        raw = ff("-ss",f"{t:.8f}","-i",video,"-frames:v","1","-vf","scale=320:180",
+                 "-f","image2pipe","-c:v","mjpeg","-")
+        with Image.open(BytesIO(raw)) as frame:
+            x,y=(i%3)*320,(i//3)*206
+            sheet.paste(frame,(x,y))
+            pen.text((x+5,y+182),f"{'outgoing' if i<3 else 'incoming'} | {t:.2f}s",fill="white")
+    path=folder/"seam.jpg"
+    sheet.save(path,quality=88)
+    return path

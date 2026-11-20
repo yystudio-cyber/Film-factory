@@ -1,5 +1,17 @@
 # 工作站接入与首片验收
 
+## 升级已有项目
+
+更新仓库代码，保留 config.local.json、workflows、assets 和 runs。旧配置可继续使用 Qwen 单模型。要启用分工，在原配置中加入 text_provider 为 deepseek、ds_base 为现有服务的 OpenAI 兼容基址、ds_model 为该服务的准确模型 ID，并设置 FILM_DS_KEY；或在没有 text_provider 字段的旧配置中设置 FILM_DS_BASE、FILM_DS_MODEL 和 FILM_DS_KEY。FILM_LLM_KEY 继续用于 Qwen。独立密钥不会互相代用。首次运行自动增建批次和执行记录表。既有成片可继续播放；旧任务在继续生产时补做剧情核对，无历史执行记录的阶段不会凭空补写。
+
+打开 /setup 检查两个逻辑角色显示的 model、base 和 key_set。只有实际生成请求成功才证明模型可用。Windows 启动命令见仓库首页。需要比较导演质量时，用已提交项目的 brief.json 执行以下命令，输出文件指定新的路径；测试会消耗两个文本 API 的额度。
+
+```powershell
+D:\ai\venv\Scripts\python.exe film.py compare-directors D:\ai\film-factory\runs\项目ID\brief.json D:\ai\director-comparison.json
+```
+
+两个模型各出一份分镜，两位评审分别对两份匿名分镜做原文覆盖检查。报告保留模型名、分镜、耗时、合规情况、遗漏理由及错误。可用已知难例重复几次，再决定哪种路由更适合自己的素材。比较只使用文本和素材描述。
+
 ## 一次性接入现有工作流
 
 打开本地 8766 端口的「工作流接入与自检」。自检检查 ffmpeg、ffprobe、Pillow、字体、环境变量、ComfyUI、ACE-Step 和三条绑定。未勾配乐的任务可在没有 ACE-Step 的情况下制作。密钥自检只检查是否设置；首次调用导演时会实际验证模型授权。

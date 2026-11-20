@@ -12,6 +12,14 @@ def doctor(cfg):
         checks[tool] = shutil.which(tool) or False
     import os
     checks["FILM_LLM_KEY"] = bool(os.environ.get("FILM_LLM_KEY"))
+    from .director import Director
+    director = Director(cfg)
+    for label, vision in (("文本导演",False),("视觉审片",True)):
+        try:
+            base, model, key, _ = director.endpoint(vision)
+            checks[label] = {"model":model,"base":base,"key_set":bool(os.environ.get(key))}
+        except ValueError as err:
+            checks[label] = str(err)
     try:
         import PIL
         checks["Pillow"] = PIL.__version__

@@ -4,15 +4,18 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from . import graphs, setup
+from . import graphs, monitor, setup
 from .common import assets, read, write
 from .engine import Factory
 from .store import Store
+from .station import Station
 
 
 def specification(body):
+    if not isinstance(body, dict):
+        raise ValueError("影片条目应为 JSON 对象")
     spec = {k:body.get(k, "") for k in ("title","script","requirements","seconds","mode","music")}
     if not all(isinstance(spec[k],str) and spec[k].strip() for k in ("script","requirements","title")):
         raise ValueError("需要片名、剧本和制作要求")
@@ -26,6 +29,7 @@ def specification(body):
 
 
 def handler(cfg, store):
+    station = Station(cfg)
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -82,11 +86,26 @@ def handler(cfg, store):
                 path = urlsplit(self.path).path
                 if path in {"/","/setup"}:
                     return self.file(Path(__file__).with_name("index.html" if path == "/" else "setup.html"))
+                if path in {"/monitor","/monitor.js","/monitor.css"}:
+                    name = "monitor.html" if path == "/monitor" else path[1:]
+                    return self.file(Path(__file__).with_name(name))
+                match = re.fullmatch(r"/api/monitor/([a-f0-9]{32})",path)
+                if match:
+                    selected = parse_qs(urlsplit(self.path).query).get("shot")
+                    return self.respond(monitor.snapshot(store,match[1],int(selected[0]) if selected else None))
+                match = re.fullmatch(r"/api/frames/([a-f0-9]{32})/(S[0-9]{2,3}-V[12]-[0-9a-f]{10})/([0-4]|seam)",path)
+                if match:
+                    frame = store.root/match[1]/"takes"/match[2]/("seam.jpg" if match[3]=="seam" else f"frame-{match[3]}.jpg")
+                    if frame.is_file():
+                        return self.file(frame)
+                    return self.send_error(404)
                 if path == "/api/jobs":
                     return self.respond([{k:(json.loads(v)["title"] if k=="spec" else v) for k,v in j.items()}
                                         for j in store.jobs()])
                 if path == "/api/assets":
                     return self.respond(list(assets(cfg)))
+                if path == "/api/station":
+                    return self.respond(station.read())
                 if path == "/api/doctor":
                     return self.respond(setup.doctor(cfg))
                 if path == "/api/history":
@@ -120,6 +139,15 @@ def handler(cfg, store):
                 if not 0 < length <= 16_000_000 or self.headers.get_content_type()!="application/json":
                     return self.send_error(400)
                 body = json.loads(self.rfile.read(length))
+                if self.path == "/api/batches":
+                    rows = body.get("films")
+                    if not isinstance(rows,list) or not 1<=len(rows)<=50:
+                        raise ValueError("每批需要 1–50 部影片")
+                    token = body.get("token")
+                    if not isinstance(token,str) or not re.fullmatch(r"[a-zA-Z0-9-]{12,80}",token):
+                        raise ValueError("无效的批次提交编号")
+                    specs = [specification({"mode":"auto","music":True,**row}) for row in rows]
+                    return self.respond({"ids":store.add_many(specs,token)},201)
                 if self.path == "/api/jobs":
                     return self.respond({"id":store.add(specification(body))},201)
                 if self.path == "/api/inspect":

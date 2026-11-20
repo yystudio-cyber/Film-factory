@@ -1,0 +1,265 @@
+:root {
+  font: 15px/1.55 Inter, "Microsoft YaHei", sans-serif;
+  color: #e7ebe4;
+  background: #141915;
+  color-scheme: dark
+}
+
+* {
+  box-sizing: border-box
+}
+
+body {
+  margin: 0
+}
+
+header {
+  display: flex;
+  gap: 24px;
+  padding: 15px max(4vw, 16px);
+  background: #222b24;
+  border-bottom: 1px solid #425043;
+  align-items: center
+}
+
+header strong {
+  flex: 1
+}
+
+a {
+  color: #b2e6ab
+}
+
+main {
+  max-width: 1440px;
+  padding: 24px 4vw;
+  margin: auto
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0 0 12px
+}
+
+h1 {
+  font-size: 32px
+}
+
+h2 {
+  font-size: 18px
+}
+
+h3 {
+  font-size: 15px
+}
+
+.bar,
+.split {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between
+}
+
+.split label {
+  flex: 1
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(195px, .65fr) minmax(0, 2.8fr);
+  gap: 20px
+}
+
+section,
+aside {
+  border: 1px solid #384439;
+  background: #1b231d;
+  border-radius: 10px;
+  padding: 18px;
+  margin: 0 0 16px
+}
+
+aside {
+  align-self: start
+}
+
+label {
+  display: block;
+  margin: 10px 0
+}
+
+button,
+input {
+  font: inherit
+}
+
+button {
+  background: #b4dfa8;
+  color: #162219;
+  border: 0;
+  padding: 8px 13px;
+  border-radius: 5px;
+  cursor: pointer
+}
+
+button:disabled {
+  opacity: .5
+}
+
+input:not([type=checkbox]) {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  background: #111912;
+  border: 1px solid #526553;
+  border-radius: 4px;
+  padding: 7px
+}
+
+.ghost,
+#shots button,
+#queue button {
+  background: #253028;
+  color: #dae6d7;
+  border: 1px solid #435045
+}
+
+#shots button,
+#steps span {
+  margin: 3px
+}
+
+#queue button {
+  width: 100%;
+  text-align: left;
+  margin: 4px 0
+}
+
+#queue .active,
+#shots .active {
+  border-color: #bbdf9d;
+  color: #c1e5a4
+}
+
+#steps {
+  display: flex;
+  flex-wrap: wrap
+}
+
+#steps span {
+  border-bottom: 2px solid #515752;
+  padding: 4px 8px;
+  color: #abb4a8
+}
+
+#steps .done {
+  border-color: #86ab71
+}
+
+#steps .running {
+  color: #cafaab;
+  border-color: #cafaab
+}
+
+#steps .failed,
+#steps .interrupted {
+  color: #ffbd94;
+  border-color: #d78756
+}
+
+.meter {
+  height: 5px;
+  background: #39433a;
+  border-radius: 8px
+}
+
+.meter i {
+  display: block;
+  height: 100%;
+  background: #b6da9f
+}
+
+#state,
+.muted,
+#clock,
+#count {
+  color: #b1c0ae;
+  font-size: 13px
+}
+
+.entry {
+  padding: 10px 0;
+  border-bottom: 1px solid #354237
+}
+
+.strip {
+  display: flex;
+  gap: 4px;
+  overflow: auto;
+  margin: 10px 0
+}
+
+.strip img {
+  width: 19%;
+  object-fit: contain;
+  min-width: 70px
+}
+
+.scores {
+  font-size: 13px;
+  color: #bbdaae
+}
+
+.bad,
+#error {
+  color: #ffb899
+}
+
+details {
+  margin: 7px 0
+}
+
+summary {
+  cursor: pointer
+}
+
+#obligations {
+  margin: 14px 0
+}
+
+small {
+  display: block;
+  color: #acb9a8
+}
+
+#trace {
+  max-height: 330px;
+  overflow: auto
+}
+
+#trace .entry {
+  font-size: 13px
+}
+
+@media(max-width:760px) {
+  .layout {
+    display: block
+  }
+
+  .bar,
+  .split {
+    flex-wrap: wrap
+  }
+
+  main {
+    padding: 16px
+  }
+
+  aside {
+    max-height: 180px;
+    overflow: auto
+  }
+}

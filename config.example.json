@@ -10,5 +10,10 @@
   "height": 1080,
   "font": "C:/Windows/Fonts/msyh.ttc",
   "attempts": 3,
-  "threshold": 4
+  "threshold": 4,
+  "text_provider": "deepseek",
+  "ds_base": "https://api.deepseek.com",
+  "ds_model": "deepseek-flash",
+  "ds_json": true,
+  "ds_thinking": "disabled"
 }

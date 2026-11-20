@@ -1,4 +1,6 @@
 import json
+import hashlib
+import shutil
 import sqlite3
 import time
 import uuid
@@ -14,6 +16,10 @@ class Store:
         with self.tx() as db:
             db.executescript("""
             PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS batches(token TEXT PRIMARY KEY,digest TEXT,ids TEXT);
+            CREATE TABLE IF NOT EXISTS stages(id INTEGER PRIMARY KEY,job TEXT,shot INTEGER,take TEXT,
+                title TEXT,actor TEXT,started REAL,ended REAL,state TEXT,detail TEXT);
+            CREATE INDEX IF NOT EXISTS stage_job ON stages(job,id);
             CREATE TABLE IF NOT EXISTS jobs(
               id TEXT PRIMARY KEY, spec TEXT, state TEXT, detail TEXT, created REAL, mode TEXT,
               gate INTEGER, batch_end INTEGER DEFAULT 0, variants INTEGER DEFAULT 1);
@@ -41,14 +47,55 @@ class Store:
             db.close()
 
     def add(self, spec):
-        jid = uuid.uuid4().hex
-        folder = self.root / jid
-        folder.mkdir()
-        write(folder / "brief.json", spec)
+        return self.add_many([spec])[0]
+
+    def add_many(self, specs, token=None):
+        digest = hashlib.sha256(json.dumps(specs,sort_keys=True).encode()).hexdigest()
+        folders = []
+        try:
+            with self.tx() as db:
+                if token:
+                    previous = db.execute("SELECT * FROM batches WHERE token=?", (token,)).fetchone()
+                    if previous:
+                        if previous["digest"] != digest:
+                            raise ValueError("此提交编号已用于不同的批次")
+                        return json.loads(previous["ids"])
+                ids = []
+                for spec in specs:
+                    jid = uuid.uuid4().hex
+                    folder = self.root / jid
+                    folder.mkdir()
+                    folders.append(folder)
+                    write(folder/"brief.json", spec)
+                    db.execute("INSERT INTO jobs(id,spec,state,detail,created,mode) VALUES(?,?,'queued','',?,?)",
+                               (jid,json.dumps(spec,ensure_ascii=False),time.time(),spec["mode"]))
+                    ids.append(jid)
+                if token:
+                    db.execute("INSERT INTO batches VALUES(?,?,?)",(token,digest,json.dumps(ids)))
+            return ids
+        except Exception:
+            for folder in folders:
+                shutil.rmtree(folder, ignore_errors=True)
+            raise
+
+    @contextmanager
+    def stage(self, jid, shot, take, title, actor):
         with self.tx() as db:
-            db.execute("INSERT INTO jobs(id,spec,state,detail,created,mode) VALUES(?,?,'queued','',?,?)",
-                       (jid, json.dumps(spec, ensure_ascii=False), time.time(), spec["mode"]))
-        return jid
+            key = db.execute("INSERT INTO stages(job,shot,take,title,actor,started,state) "
+                             "VALUES(?,?,?,?,?,?,'running')",(jid,shot,take,title,actor,time.time())).lastrowid
+        state, detail = "done", ""
+        try:
+            yield
+        except Exception as err:
+            state, detail = "failed", str(err)[:1600]
+            raise
+        finally:
+            with self.tx() as db:
+                db.execute("UPDATE stages SET state=?,detail=?,ended=? WHERE id=?", (state,detail,time.time(),key))
+
+    def stages(self, jid):
+        with self.tx() as db:
+            return [dict(r) for r in db.execute("SELECT * FROM stages WHERE job=? ORDER BY id DESC LIMIT 120",(jid,))]
 
     def jobs(self):
         with self.tx() as db:
@@ -64,6 +111,7 @@ class Store:
 
     def recover(self):
         with self.tx() as db:
+            db.execute("UPDATE stages SET state='interrupted',ended=? WHERE state='running'",(time.time(),))
             db.execute("""UPDATE jobs SET state='cancelled', detail='服务中断；已验收镜头保留，需手动继续'
                           WHERE state IN ('running','queued')""")
 

@@ -10,6 +10,7 @@ if not exist "%FILM_PYTHON%" (
 )
 set "PYTHONUTF8=1"
 if not defined FILM_LLM_KEY echo Configure FILM_LLM_KEY before starting production.
-echo Open http://127.0.0.1:8766 in your browser
+echo Console: http://127.0.0.1:8766
+echo Production monitor: http://127.0.0.1:8766/monitor
 "%FILM_PYTHON%" film.py serve
 pause

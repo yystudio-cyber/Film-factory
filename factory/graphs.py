@@ -76,7 +76,38 @@ def upload(base, path):
     return "/".join(filter(None, [result.get("subfolder"), result["name"]]))
 
 
+def reconcile(base, client_id):
+    # Match a unique caller nonce, never the latest filename or somebody else's job.
+    history = request(base+"/history?max_items=128")
+    matches = [pid for pid,item in history.items() if len(item.get("prompt",[]))>3 and
+               item["prompt"][3].get("client_id")==client_id]
+    if not matches:
+        queue = request(base+"/queue")
+        matches = [row[1] for key in ("queue_running","queue_pending") for row in queue.get(key,[])
+                   if len(row)>3 and row[3].get("client_id")==client_id]
+    if len(matches)!=1:
+        raise RuntimeError(f"提交回执不确定，请核对 ComfyUI 历史或队列（client_id={client_id}）。"
+                           "该次继续不会重复投递；确认需要新任务后，可显式修改该镜。")
+    return matches[0]
+
+
 def render(cfg, shot, first, last, seed, directory, checkpoint):
+    base = cfg["comfy"].rstrip("/")
+    prepared = directory/"source-ready.json"
+    if prepared.exists():
+        path = directory/read(prepared)["file"]
+        if path.is_file():
+            return path
+    receipt_file = directory/"remote.json"
+    if receipt_file.exists():
+        receipt = read(receipt_file)
+        if receipt.get("base",base) != base:
+            raise ValueError("此镜已提交至其他 ComfyUI 地址，请核对原服务")
+        pid = receipt.get("prompt_id") or reconcile(base,receipt["client_id"])
+        receipt["prompt_id"] = pid
+        write(receipt_file,receipt)
+        return collect(cfg,base,pid,receipt["output"],directory,checkpoint)
+
     route = "FLF" if last else "I2V" if first else "T2V"
     profile = load_profile(cfg, route)
     base = cfg["comfy"].rstrip("/")
@@ -94,17 +125,30 @@ def render(cfg, shot, first, last, seed, directory, checkpoint):
             graph[node]["inputs"][field] = values[key]
     write(directory / "graph.json", graph)
     checkpoint()
-    ticket = request(base + "/prompt", {"prompt": graph, "client_id": uuid.uuid4().hex})
-    pid = ticket["prompt_id"]
-    write(directory / "remote.json", {"prompt_id": pid})
+    client_id = uuid.uuid4().hex
+    receipt = {"client_id":client_id,"base":base,"output":profile["output"]}
+    write(receipt_file,receipt)
+    try:
+        ticket = request(base+"/prompt",{"prompt":graph,"client_id":client_id})
+    except RuntimeError as err:
+        if str(err).startswith("HTTP 400:"):
+            write(directory/"remote-error.json",{"error":str(err)})
+        raise
+    receipt["prompt_id"] = ticket["prompt_id"]
+    write(receipt_file,receipt)
+    return collect(cfg,base,ticket["prompt_id"],profile["output"],directory,checkpoint)
+
+
+def collect(cfg,base,pid,output_node,directory,checkpoint):
     deadline = time.monotonic() + 3600
     while time.monotonic() < deadline:
         checkpoint()
         item = request(base + "/history/" + pid).get(pid)
         if item:
             if item.get("status", {}).get("status_str") == "error":
+                write(directory/"remote-error.json",{"status":item["status"]})
                 raise RuntimeError("ComfyUI execution failed: " + str(item["status"].get("messages", []))[-1200:])
-            output = item.get("outputs", {}).get(profile["output"], {})
+            output = item.get("outputs", {}).get(output_node, {})
             videos = [v for group in output.values() if isinstance(group, list) for v in group
                       if isinstance(v, dict) and Path(v.get("filename", "")).suffix.lower() in
                       {".mp4", ".webm", ".mov", ".mkv"} and v.get("type", "output") == "output"]
@@ -114,6 +158,7 @@ def render(cfg, shot, first, last, seed, directory, checkpoint):
             path = directory / ("source" + Path(ref["filename"]).suffix.lower())
             request(base + "/view?" + urlencode({k: ref[k] for k in ("filename", "subfolder", "type") if k in ref}),
                     timeout=300, dest=path)
+            write(directory/"source-ready.json",{"file":path.name})
             return path
         time.sleep(cfg.get("poll_seconds", 2))
     raise TimeoutError(f"ComfyUI timeout; inspect prompt {pid} before restarting")

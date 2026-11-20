@@ -29,6 +29,8 @@ class Environment(unittest.TestCase):
         media.ff("-i",clip,"-frames:v","1",root/"assets"/"anchor.png")
         media.ff("-f","lavfi","-i","sine=f=200:r=48000","-t","6",score)
         self.submitted, self.uploaded, self.reviews = [], [], []
+        self.calls = []
+        self.missing = False
         self.reject_first = True
         self.reject_all = False
         self.reject_final = False
@@ -61,10 +63,24 @@ class Environment(unittest.TestCase):
                     return self.reply({"data":[{"task_id":"M1","status":1,
                                         "result":json.dumps([{"file":"/v1/audio?path=sample.wav"}])}]})
                 instruction = body["messages"][0]["content"]
-                if "You direct" in instruction:
+                owner.calls.append((body,self.headers.get("Authorization"),self.path))
+                content = body["messages"][1]["content"]
+                data=json.loads(content if isinstance(content,str) else content[0]["text"])
+                if "Read the two colored panels" in instruction:
+                    import base64,io
+                    from PIL import Image,ImageColor
+                    image=Image.open(io.BytesIO(base64.b64decode(content[1]["image_url"]["url"].split(",")[1])))
+                    lookup={ImageColor.getrgb(n):n for n in ("red","green","blue","yellow")}
+                    value={"colors":[lookup[image.getpixel((x,32))] for x in (16,96)]}
+                elif "Act as script supervisor" in instruction:
+                    value={"rows":[{"id":u["id"],"covered":not owner.missing,"notes":"覆盖说明",
+                                    "checks":[{"shot":i,"expect":"工位镜头","literal":"","channel":"visual"} for i in (1,2,3)]}
+                                   for u in data["units"]]}
+                elif "Evaluate each source unit" in instruction:
+                    value={"rows":[{"id":u["id"],"passed":True,"notes":"可见工位","repair_shot":None} for u in data["units"]]}
+                elif "You direct" in instruction:
                     value = plan
                 elif "Update this shot" in instruction:
-                    data=json.loads(body["messages"][1]["content"][0]["text"])
                     value = {"shot":dict(data["shot"],beat="lower camera")}
                 elif "English LTX" in instruction:
                     value = {"prompt":"A camera travels through a bright and busy workshop with two desks. "*8
@@ -74,6 +90,7 @@ class Environment(unittest.TestCase):
                     ok = (len(owner.reviews)>1 or not owner.reject_first) and not owner.reject_all
                     value = {"scores":{k:5 if ok else 2 for k in
                              ("story","composition","identity","continuity","artifacts")},
+                             "checks":[{"index":i+1,"result":"seen","evidence":"desk"} for i in range(len(data["shot"]["obligations"]))],
                              "notes":"workshop visible","repair":"show the desk"}
                 elif "Audit the actual" in instruction:
                     value = {"passed":not owner.reject_final,"notes":"片序符合要求"}
@@ -199,6 +216,126 @@ class Environment(unittest.TestCase):
         self.store.claim()
         code=self.store.register(jid,1,self.cfg["data"]/jid/"new")
         self.assertEqual(code,10)
+
+    def test_atomic_batch_and_coverage_gate(self):
+        row = dict(title="短片",script="工位",seconds=6,requirements="片尾",music=False)
+        payload={"token":"test-batch-unique","films":[row,{**row,"title":"第二部"}]}
+        with self.assertRaisesRegex(RuntimeError,"400"):
+            request(self.url+"/api/batches",{**payload,"films":[row,{**row,"seconds":-1}]})
+        self.assertEqual(self.store.jobs(),[])
+        ids=request(self.url+"/api/batches",payload)["ids"]
+        self.assertEqual(request(self.url+"/api/batches",payload)["ids"],ids)
+        self.missing=True
+        with self.assertRaisesRegex(ValueError,"剧情核对失败"):
+            self.execute(ids[0])
+        self.assertEqual(len(self.submitted),0)
+        self.store.status(ids[0],"failed","coverage")
+        self.assertEqual(self.store.claim(),ids[1])
+
+    def test_dual_provider_and_1080_monitor(self):
+        self.reject_first=False
+        self.cfg.update(text_provider="deepseek",ds_base=self.cfg["llm"]+"/ds",
+                        ds_model="ds-v4.1-flash",width=1920,height=1080)
+        root=self.cfg["data"].parent
+        media.ff("-f","lavfi","-i","testsrc2=size=1920x1088:rate=24",
+                 "-f","lavfi","-i","sine=f=400:r=48000","-t",str(49/24),
+                 "-c:v","libx264","-preset","ultrafast","-threads","4","-c:a","aac",root/"fixture.mp4")
+        with patch.dict(os.environ,{"FILM_DS_KEY":"text-only-test"}):
+            jid=self.new()
+            self.execute(jid)
+        self.assertTrue(any(k=="Bearer text-only-test" for _,k,_ in self.calls))
+        for body,key,path in self.calls:
+            content = body["messages"][1]["content"]
+            if path.startswith("/ds/"):
+                self.assertEqual(key,"Bearer text-only-test")
+                self.assertEqual(body["model"],"ds-v4.1-flash")
+                self.assertIsInstance(content,str)
+            else:
+                self.assertEqual(key,"Bearer test")
+                self.assertTrue(any(b["type"]=="image_url" for b in content))
+        view=request(self.url+"/api/monitor/"+jid+"?shot=2")
+        self.assertEqual(view["state"],"done")
+        self.assertEqual((view["technical"]["width"],view["technical"]["height"],view["technical"]["frames"]),
+                         (1920,1080,144))
+        self.assertTrue(view["source_verdicts"])
+        self.assertTrue(view["attempts"][0]["seam"])
+        self.assertTrue(view["stages"])
+        a=view["attempts"][0]["id"]
+        image=root/"boundary.jpg"
+        request(self.url+f"/api/frames/{jid}/{a}/seam",dest=image)
+        self.assertTrue(image.read_bytes().startswith(b"\xff\xd8"))
+
+    def test_post_receipt_loss_recovers_existing_render(self):
+        from factory.common import request as original
+        self.reject_first=False
+        jid=self.new()
+        calls=[]
+        nonce=[]
+        def lose_receipt(url,body=None,**kwargs):
+            if url.endswith("/prompt") and not calls:
+                calls.append(original(url,body,**kwargs))
+                nonce.append(body["client_id"])
+                raise ConnectionError("response lost after acceptance")
+            if url.endswith("/history?max_items=128") and nonce:
+                return {"1":{"prompt":[0,"1",{},{"client_id":nonce[0]}]}}
+            return original(url,body,**kwargs)
+        with patch("factory.graphs.request",side_effect=lose_receipt):
+            with self.assertRaisesRegex(ConnectionError,"response lost"):
+                self.execute(jid)
+            self.store.status(jid,"failed","response lost")
+            self.store.command(jid,"resume")
+            self.execute(jid)
+        self.assertEqual(len(self.submitted),3)
+        self.assertEqual(self.store.job(jid)["state"],"done")
+
+    def test_low_disk_no_inference(self):
+        from collections import namedtuple
+        jid=self.new()
+        usage=namedtuple("Usage","total used free")(1000,999,1)
+        with patch("factory.common.shutil.disk_usage",return_value=usage):
+            with self.assertRaisesRegex(ValueError,"工作盘"):
+                self.execute(jid)
+        self.assertFalse(self.calls)
+        self.assertFalse(self.submitted)
+
+    def test_ambiguous_remote_does_not_requeue(self):
+        with patch("factory.graphs.request",return_value={}) as service:
+            with self.assertRaisesRegex(RuntimeError,"回执不确定"):
+                graphs.reconcile("http://fixture","no-match")
+        self.assertEqual(service.call_count,2)
+        self.assertTrue(all(len(c.args)==1 for c in service.call_args_list))
+
+    def test_reference_snapshot_survives_original_change(self):
+        from factory.references import snapshot
+        f = self.cfg["assets"]/"anchor.png"
+        b = f.read_bytes()
+        folder = self.cfg["data"]
+        result = snapshot(folder,{"anchor.png":f},["anchor.png"])
+        f.write_bytes(b"changed")
+        self.assertEqual(snapshot(folder,{},["anchor.png"])["anchor.png"].read_bytes(),b)
+        self.assertNotEqual(result["anchor.png"],f)
+
+    def test_worker_continues_after_failed_film(self):
+        import time
+        first, second = self.new(), self.new()
+        real = self.engine.produce
+        def one_bad(jid):
+            if jid==first:
+                raise ValueError("first failed")
+            real(jid)
+        self.reject_first=False
+        with patch.object(self.engine,"produce",side_effect=one_bad):
+            thread=threading.Thread(target=self.engine.worker,daemon=True)
+            thread.start()
+            try:
+                end=time.monotonic()+60
+                while self.store.job(second)["state"] not in {"done","failed"} and time.monotonic()<end:
+                    time.sleep(.1)
+                self.assertEqual(self.store.job(first)["state"],"failed")
+                self.assertEqual(self.store.job(second)["state"],"done")
+            finally:
+                self.engine.shutdown.set()
+                thread.join(5)
 
     def test_exact_clock(self):
         self.assertEqual([frame_count(i*24) for i in (2,4,6,8)],[49,97,145,193])

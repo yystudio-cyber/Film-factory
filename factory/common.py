@@ -13,6 +13,13 @@ import urllib.request
 from pathlib import Path
 
 
+class ServiceHTTPError(RuntimeError):
+    def __init__(self, status, detail, retry_after):
+        super().__init__(f"HTTP {status}: {detail}")
+        self.status = status
+        self.retry_after = retry_after
+
+
 class Rejected(ValueError):
     """Candidate failed an acceptance test and can be regenerated."""
 
@@ -32,6 +39,10 @@ def write(path, value):
 def config(path):
     path = Path(path).resolve()
     cfg = read(path)
+    if cfg.get("text_provider","qwen") not in {"qwen","deepseek"}:
+        raise ValueError("text_provider 仅支持 qwen 或 deepseek")
+    if not math.isfinite(float(cfg.get("min_free_gib",2))) or float(cfg.get("min_free_gib",2))<0:
+        raise ValueError("min_free_gib 需要非负有限值")
     for k in ("data", "assets", "workflows"):
         cfg[k] = (path.parent / cfg[k]).resolve()
         cfg[k].mkdir(parents=True, exist_ok=True)
@@ -71,10 +82,23 @@ def _request(url, body=None, *, headers=None, timeout=60, dest=None):
         with urllib.request.urlopen(req, timeout=timeout) as response:
             if dest is None:
                 return json.load(response)
-            with Path(dest).open("wb") as out:
-                shutil.copyfileobj(response, out)
+            target = Path(dest)
+            partial = target.with_name(target.name+".part")
+            try:
+                with partial.open("wb") as out:
+                    shutil.copyfileobj(response,out)
+                length = response.headers.get("Content-Length")
+                if length and partial.stat().st_size != int(length):
+                    raise ConnectionError("媒体下载不完整")
+                os.replace(partial,target)
+            finally:
+                partial.unlink(missing_ok=True)
     except urllib.error.HTTPError as err:
-        raise RuntimeError(f"HTTP {err.code}: {err.read(1500).decode('utf8', 'replace')}") from err
+        detail = err.read(1500).decode("utf8","replace")
+        for secret in (os.getenv("FILM_LLM_KEY"),os.getenv("FILM_DS_KEY")):
+            if secret and len(secret)>6:
+                detail = detail.replace(secret,"[redacted]")
+        raise ServiceHTTPError(err.code,detail,err.headers.get("Retry-After")) from err
 
 
 def image_url(path):
@@ -94,3 +118,11 @@ def assets(cfg):
     return {p.name: p for p in sorted(cfg["assets"].iterdir())
             if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
             and p.resolve().parent == cfg["assets"]}
+
+def disk_budget(cfg, seconds=0):
+    reserve = float(cfg.get("min_free_gib",2))
+    needed = int(reserve * 2**30) + seconds*48000*4
+    available = shutil.disk_usage(cfg["data"]).free
+    if available < needed:
+        raise ValueError(f"工作盘剩余 {available/2**30:.2f} GiB，当前阶段预留 {needed/2**30:.2f} GiB；"
+                         "请释放空间后继续")

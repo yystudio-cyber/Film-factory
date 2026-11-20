@@ -15,6 +15,9 @@ def main():
     web = cmd.add_parser("serve")
     web.add_argument("--port",type=int,default=8766)
     cmd.add_parser("doctor")
+    compare = cmd.add_parser("compare-directors")
+    compare.add_argument("brief")
+    compare.add_argument("output")
     legacy = cmd.add_parser("import-clips")
     legacy.add_argument("manifest")
     edit = cmd.add_parser("export-edit")
@@ -32,6 +35,11 @@ def main():
     cfg = config(args.config)
     if args.command == "serve":
         serve(cfg,args.port)
+    elif args.command == "compare-directors":
+        from factory.common import read
+        from factory.comparison import compare
+        from factory.web import specification
+        compare(cfg,specification(read(args.brief)),args.output)
     elif args.command == "export-edit":
         from factory.editor import export_edit
         from factory.store import Store
