@@ -2,14 +2,14 @@ import re
 import shutil
 from pathlib import Path
 
-from .common import canvas, request
+from .common import canvas, executable, request
 from .graphs import ROUTES, load_profile, unpack
 
 
 def doctor(cfg):
     checks = {}
     for tool in ("ffmpeg", "ffprobe"):
-        checks[tool] = shutil.which(tool) or False
+        checks[tool] = shutil.which(executable(tool)) or False
     import os
     checks["FILM_LLM_KEY"] = bool(os.environ.get("FILM_LLM_KEY"))
     from .director import Director
@@ -37,6 +37,12 @@ def doctor(cfg):
             checks[route] = True
         except Exception as err:
             checks[route] = str(err)
+    if cfg.get("station_contract"):
+        from .ownership import queue_state
+        try:
+            checks["8188_queue"] = {"tasks":len(queue_state(cfg))}
+        except Exception as err:
+            checks["8188_queue"] = {"error":str(err)}
     checks["font"] = Path(cfg["font"]).is_file()
     return checks
 
@@ -82,7 +88,7 @@ def fields(graph, cfg=None):
             elif field in {"fps","frame_rate"}:
                 suggested = "fps"
             elif field == "text" and ("negative" in title.lower() or "负向" in title):
-                suggested = "negative"
+                suggested = ""
             elif field == "text" and ("positive" in title.lower() or "正向" in title):
                 suggested = "prompt"
             elif field == "filename_prefix" and node in outputs:
@@ -103,5 +109,7 @@ def fields(graph, cfg=None):
                         suggested=dim
                     elif value == full//2:
                         suggested="half_"+dim
+            if suggested=="negative" and cfg and cfg.get("station_contract"):
+                suggested=""
             rows.append({"target":node+"."+field, "label":title, "value":str(value)[:110], "suggest":suggested})
     return {"rows":rows, "outputs":outputs}

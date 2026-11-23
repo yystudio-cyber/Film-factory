@@ -32,6 +32,7 @@ def snapshot(store, jid, shot):
                          "eligible":bool(take.get("eligible")),"design":meta,
                          "seam":(directory/"seam.jpg").is_file(),"motion":optional(directory,"motion.json",{}),
                          "ticket":optional(directory,"remote.json",{}).get("prompt_id"),
+                         "speech":optional(directory,"speech.json"),
                          "tech":optional(directory,"technical.json"),"review":optional(directory,"review.json"),
                          "rejection":optional(directory,"rejected.json"),
                          "frames":[i for i in range(5) if (directory/f"frame-{i}.jpg").is_file()]})

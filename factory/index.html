@@ -214,7 +214,7 @@
     <div>
       <section>
         <h1>新建影片</h1>
-        <form id="brief"><label for="title">片名</label><input id="title" required placeholder="我在 ECARX 的前行路"><label
+        <form id="brief"><label for="title">片名</label><input id="title" placeholder="可选，默认取剧本首行"><label
             for="script">剧本</label><textarea id="script" rows="8" required
             placeholder="粘贴剧本，保留对白、地点与定版文字"></textarea><label for="requirements">制作要求</label><textarea id="requirements"
             rows="3" required placeholder="风格、受众、必须保留的细节、参考素材文件名"></textarea>
@@ -225,14 +225,13 @@
             <label for="channel">播放渠道</label><input id="channel" maxlength="600" placeholder="例如：招聘会现场大屏">
           </details>
           <div class="row">
-            <div><label for="seconds">目标时长（秒）</label><input id="seconds" type="number" min="2" max="600" value="60"
-                required></div>
+            <div><label for="seconds">目标时长（秒）</label><input id="seconds" type="number" min="2" max="600" placeholder="自动读取，缺省 60"></div>
             <div><label for="mode">生产模式</label><select id="mode">
                 <option value="review">逐镜确认</option>
                 <option value="auto">全自动成片</option>
               </select></div>
           </div><label><input type="checkbox" id="music" checked> 生成原创配乐</label>
-          <label><input type="checkbox" id="renderDraft"> 正片前生成单阶段渲染草稿</label><button class="spacer">开始生产</button>
+          <label for="renderDraft">正片前的动作草稿</label><select id="renderDraft"><option value="off">直接制作正片</option><option value="risk">仅高风险镜先出草稿</option><option value="all">所有镜头先出草稿</option></select><button class="spacer">按所选模式生产</button> <button class="spacer" type="submit" value="auto">一键全自动成片</button>
         </form>
         <details>
           <summary>可用参考素材</summary>
@@ -408,10 +407,11 @@
           title: $('title').value,
           script: $('script').value,
           requirements: $('requirements').value,
-          seconds: Number($('seconds').value),
-          mode: $('mode').value,
+          seconds: $('seconds').value ? Number($('seconds').value) : null,
+          mode: b.value === 'auto' ? 'auto' : $('mode').value,
           music: $('music').checked,
-          render_drafts: $('renderDraft').checked,
+          render_drafts: $('renderDraft').value !== 'off',
+          draft_policy: $('renderDraft').value === 'risk' ? 'risk' : 'all',
           ...(Object.keys(productionBrief).length ? {production_brief: productionBrief} : {})
         });
         selectJob(result.id);

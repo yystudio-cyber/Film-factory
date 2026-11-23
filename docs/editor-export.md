@@ -3,7 +3,7 @@
 任务状态为 `done` 后，在 Film-factory 目录执行。把 `JOB_ID` 换成控制台显示的任务号，目标选一个尚未创建的目录。导出从数据库选中的发行版读取时间线、采用镜头、混音报告与配乐。工作站只需现有的 Python、FFmpeg 和 ffprobe。
 
 ```powershell
-D:\ai\venv\Scripts\python.exe film.py export-edit JOB_ID D:\ai\edit-exports\pilot-v1
+python film.py export-edit JOB_ID .\edit-exports\pilot-v1
 ```
 
 将整个 `pilot-v1` 文件夹交给剪辑师。DaVinci Resolve 18.5 起支持从 **File → Import → Timeline** 打开 `timeline.otio`。所有媒体引用相对于这个文件，跨盘或跨系统后保留同一目录结构；如果剪辑软件要求重新链接，选择 `picture` 中带 `-picture` 后缀的文件和根目录中的 WAV。各软件对备用代理引用的支持不同，必要时手动指定对应的 `Sxx-Cxxx.mp4`。本项目的测试用官方 OTIO 0.18.1 读回并重写了导出的时间线。[Resolve 导入说明](https://documents.blackmagicdesign.com/SupportNotes/DaVinci_Resolve_18.5_New_Features_Guide.pdf) · [OTIO 数据格式](https://opentimelineio.readthedocs.io/en/latest/tutorials/otio-serialized-schema.html)

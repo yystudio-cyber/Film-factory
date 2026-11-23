@@ -54,11 +54,11 @@ def _literal_error(spec, value, role, cfg):
         if choices is not None or kind in ("STRING", "COMBO", "*"):
             return None
         return "图像文件名须绑定到上传文件选择器或字符串字段"
-    if role in {"frames", "seed", "fps", "width", "height", "half_width", "half_height"}:
+    if role in {"seconds", "frames", "seed", "fps", "width", "height", "half_width", "half_height"}:
         if kind not in ("INT", "FLOAT", "*"):
             return f"数值绑定指向 {kind}"
         w, h = canvas(cfg)
-        values = {"frames":[frame_count(24*s) for s in range(2,9)], "seed":[0, 2**31-1],
+        values = {"seconds":list(range(2,9)), "frames":[frame_count(24*s) for s in range(2,9)], "seed":[0, 2**31-1],
                   "fps":[24], "width":[w], "height":[h], "half_width":[w//2], "half_height":[h//2]}[role]
     elif role in {"prompt", "negative", "prefix"}:
         return None if kind in ("STRING", "*") else f"文本绑定指向 {kind}"
@@ -199,6 +199,36 @@ def calibration(graph, output, errors, warnings):
     return result
 
 
+def registry_fields(declared, inputs):
+    """Read flat legacy fields and selected Comfy V3 dynamic fields from live object_info."""
+    required = dict(declared.get("required",{}))
+    optional = dict(declared.get("optional",{}))
+    for name,spec in list({**required,**optional}.items()):
+        kind,meta = _widget(spec)
+        if kind=="COMFY_DYNAMICCOMBO_V3":
+            options=meta.get("options",[])
+            selected=next((o for o in options if o.get("key")==inputs.get(name)),None)
+            if selected is None:
+                raise ValueError(f"{name} 的 resize/动态选项未匹配现场 schema")
+            for target,bucket in ((required,"required"),(optional,"optional")):
+                target.update({name+"."+field:definition for field,definition in
+                               selected["inputs"].get(bucket,{}).items()})
+        elif kind=="COMFY_AUTOGROW_V3":
+            template=meta["template"]
+            fields=template.get("names")
+            if fields is None:
+                fields=[template["prefix"]+str(i) for i in range(template["max"])]
+            definition=template["input"]
+            is_required=bool(definition.get("required"))
+            widget=next(iter((definition.get("required") or definition["optional"]).values()))
+            required.pop(name,None)
+            optional.pop(name,None)
+            for i,key in enumerate(fields):
+                bucket=required if is_required and i<template["min"] else optional
+                bucket[name+"."+key]=widget
+    return required,{**required,**optional}
+
+
 def inspect_route(cfg, route, registry):
     profile = graphs.load_profile(cfg,route)
     graph = profile["graph"]
@@ -212,9 +242,8 @@ def inspect_route(cfg, route, registry):
             errors.append(f"{key} 缺少已安装节点 {kind}")
             continue
         declared = info.get("input",{})
-        required = declared.get("required",{})
-        definitions = {**required, **declared.get("optional",{})}
         inputs = node["inputs"]
+        required,definitions = registry_fields(declared,inputs)
         if key == profile["output"] and not info.get("output_node"):
             errors.append(f"{key} {kind} 没有声明为输出节点")
         for name in sorted(required.keys() - inputs.keys()):
@@ -263,7 +292,7 @@ def inspect_route(cfg, route, registry):
 
     visit(profile["output"])
     for target, role in targets.items():
-        if target.rsplit(".",1)[0] not in reachable:
+        if target.split(".",1)[0] not in reachable:
             errors.append(f"{role}: {target} 不参与最终输出")
     stages = calibration(graph, profile["output"], errors, warnings)
     return {"calibration":stages, "passed":not errors,"nodes":len(graph),"output":profile["output"],"bindings":profile["bindings"],
@@ -295,7 +324,14 @@ def _comfy(cfg):
     flags = stats.get("system",{}).get("argv",[])
     expected = ("--lowvram","--disable-smart-memory","--disable-pinned-memory")
     warnings = [f"命令行没有显示 {flag}" for flag in expected if flag not in flags]
-    return {"devices":[{k:d.get(k) for k in ("name","type","index","vram_total","vram_free")} for d in devices],
+    placement_errors = []
+    if flags and cfg.get("station_contract"):
+        if warnings:
+            placement_errors.extend(warnings)
+        device = flags[flags.index("--default-device")+1:][:1] if "--default-device" in flags else []
+        if device != ["1"] and "--default-device=1" not in flags:
+            placement_errors.append("当前 ComfyUI 启动参数未指定任务书中的物理 GPU1")
+    return {"placement_errors":placement_errors,"devices":[{k:d.get(k) for k in ("name","type","index","vram_total","vram_free")} for d in devices],
             "warnings":warnings}
 
 
@@ -369,7 +405,7 @@ def _text(director):
 
 
 def preflight(cfg):
-    director = Director(cfg)
+    director = Director(dict(cfg,allow_hosted_models=cfg.get('allow_hosted_station_tests',False)))
     checks = {}
     registry = {}
     try:
@@ -384,6 +420,8 @@ def preflight(cfg):
     for name,action in actions.items():
         try:
             checks[name] = {"passed":True,"evidence":action()}
+            if name == "comfy" and checks[name]["evidence"].get("placement_errors"):
+                checks[name]["passed"] = False
             if name == "gpu_placement":
                 checks[name]["passed"] = not checks[name]["evidence"]["errors"]
             if name == "vision":
@@ -401,12 +439,46 @@ def preflight(cfg):
 
 
 def _brief(first,last):
-    return {"title":"工作站三路实机验收","script":"三个连续的两秒镜头，依次建立场景、展示首帧的场景，"
-            "再从第二镜的结尾平稳衔接至指定的尾帧。保留现场环境声，全片轻柔纯器乐配乐。",
+    return {"title":"工作站三路实机验收","script":"【Clip 1｜00:00-00:02（2s）】建立场景，保留轻微环境声。\n"
+            "【Clip 2｜00:02-00:04（2s）】从指定首图展示一个微小动作，延续环境声。\n"
+            "【Clip 3｜00:04-00:06（2s）】承接上一镜的采用画面，平稳衔接指定尾图。全片轻柔纯器乐配乐。",
             "requirements":f"严格三镜，每镜2秒。S01 全新文生画面，首尾帧都留空。"
             f"S02 用图片 {first} 作为 start，end 留空。S03 用 previous 作为 start，用 {last} 作为 end。"
             "依据参考图描述安排真实场景与微小动作，不添加对白、旁白、标题或字幕。",
             "seconds":6,"mode":"auto","music":True}
+
+
+def isolated_brief(cfg, first, last, hashes):
+    """Freeze exactly the two requested image files without captions or adjacent assets."""
+    import shutil
+    from .studio_import import _commit_bundle
+    names = [first,last]
+    if first == last or not isinstance(hashes,list) or len(hashes) != 2:
+        raise ValueError("需要两张不同的已选图片及其指纹")
+    manifest = {"schema":"station-test-v1",
+                "assets":[dict(name=n,sha256=h,caption="") for n,h in zip(names,hashes)]}
+    root = cfg["data"]/"studio-imports"
+    root.mkdir(exist_ok=True)
+    key = _fingerprint(manifest)
+    spec = dict(_brief(first,last),studio_bundle=key,station_test=True,studio_links={
+        "1":{"start":"","end":""},"2":{"start":first,"end":""},"3":{"start":"previous","end":last}})
+    with tempfile.TemporaryDirectory(dir=root) as tmp:
+        stage = Path(tmp)/"bundle"
+        dest = stage/"assets"
+        dest.mkdir(parents=True)
+        for name,digest in zip(names,hashes):
+            if not isinstance(name,str) or Path(name).name!=name or Path(name).suffix.lower() not in {".png",".jpg",".jpeg"}:
+                raise ValueError("验收图片名称无效")
+            src = (cfg["assets"]/name).resolve(strict=True)
+            if src.parent != cfg["assets"].resolve():
+                raise ValueError("验收图片超出素材目录")
+            shutil.copyfile(src,dest/name)
+            if _file_hash(dest/name)!=digest:
+                raise ValueError("验收控制台与提交端的参考图内容不一致")
+        write(stage/"manifest.json",manifest)
+        write(stage/"brief.json",spec)
+        _commit_bundle(stage,root/key,manifest)
+    return spec
 
 
 def verify_render(cfg, jid, first, last, bound_routes=None):
@@ -445,12 +517,12 @@ def verify_render(cfg, jid, first, last, bound_routes=None):
             raise ValueError(f"S{i:02} 未通过候选审片")
         graph = read(take/"graph.json")
         width, height = canvas(cfg)
-        expected = {"frames":49, "prompt":design["prompt"], "seed":design["seed"],
+        expected = {"seconds":2, "frames":49, "prompt":design["prompt"], "seed":design["seed"],
                     "negative":graphs.NEGATIVE, "fps":24, "width":width, "height":height,
                     "half_width":width//2, "half_height":height//2}
         for role,targets in profile["bindings"].items():
             for target in targets:
-                node,field = target.rsplit(".",1)
+                node,field = target.split(".",1)
                 value = graph[node]["inputs"][field]
                 if role in expected and value!=expected[role]:
                     raise ValueError(f"S{i:02} 的 {role} 与采用的镜头设计不一致")
@@ -460,7 +532,11 @@ def verify_render(cfg, jid, first, last, bound_routes=None):
                 graph[node]["inputs"][field] = profile["graph"][node]["inputs"][field]
         if graph!=profile["graph"]:
             raise ValueError(f"S{i:02} 使用的实际图与当前 {route} 配置不一致")
-        shots.append({"route":route,"code":shot["code"],"prompt_id":ticket["prompt_id"]})
+        source_info = read(take/"technical.json")
+        if cfg.get("station_contract") and (source_info["frames"] != 49 or source_info["fps"] != 24 or
+                [source_info["width"],source_info["height"]] != [1920,1088] or not source_info["audio"]):
+            raise ValueError(f"S{i:02} 原生媒体不符合 49 帧/24fps/1920×1088/含音频要求")
+        shots.append({"source":source_info,"route":route,"code":shot["code"],"prompt_id":ticket["prompt_id"]})
     # Older published releases only froze the score itself.
     ticket_file = delivery/"score-ticket.json"
     ready_file = delivery/"score-ready.json"
@@ -477,10 +553,12 @@ def verify_render(cfg, jid, first, last, bound_routes=None):
 def _capture_stage_gpu(cfg, jid, folder, store):
     if store is None:
         return
-    active = next((s for s in store.stages(jid) if s["state"]=="running" and
-                   (s["actor"].startswith("ComfyUI") or s["actor"].startswith("ACE-Step"))),None)
-    if not active:
-        return
+    for active in store.stages(jid):
+        if active["state"]=="running" and active["actor"].startswith(("ComfyUI","ACE-Step")):
+            _capture_one_gpu(cfg,folder,active)
+
+
+def _capture_one_gpu(cfg,folder,active):
     stage = "music" if active["actor"].startswith("ACE-Step") else f"shot-{active['shot']}"
     path = folder/(stage+".json")
     if path.exists():
@@ -535,7 +613,7 @@ def watch(cfg, args, report, save):
     if not args.first or args.first==args.last or any(n not in files for n in (args.first,args.last)):
         raise ValueError("--first 与 --last 需要资产目录内两张不同的参考图")
     base = f"http://127.0.0.1:{args.port}"
-    identity = {"first":args.first,"last":args.last,"first_hash":_file_hash(files[args.first]),
+    identity = {"asset_scope_version":1,"first":args.first,"last":args.last,"first_hash":_file_hash(files[args.first]),
                 "last_hash":_file_hash(files[args.last]),"routes":{k:v["sha256"] for k,v in report["preflight"]["routes"].items()},
                 "service_digest":_fingerprint({k:cfg[k] for k in ("comfy","ace")}),"models":{k:report["preflight"]["checks"][k]["evidence"]["model"]
                                                                           for k in ("text","vision")}}
@@ -549,8 +627,8 @@ def watch(cfg, args, report, save):
             raise ValueError("此 run-id 对应的参考图、工作流或服务配置不同，请选择新编号")
         write(record,saved)
         if not saved.get("job"):
-            ids = request(base+"/api/batches",{"token":"station-accept-"+args.run_id,
-                          "films":[_brief(args.first,args.last)]},timeout=20)["ids"]
+            ids = request(base+"/api/station-test",{"token":"station-accept-"+args.run_id,
+                          "first":args.first,"last":args.last,"hashes":[identity["first_hash"],identity["last_hash"]]},timeout=20)["ids"]
             if len(ids)!=1 or not re.fullmatch(r"[a-f0-9]{32}",ids[0]):
                 raise ValueError("控制台返回的任务编号异常")
             saved["job"] = ids[0]
@@ -573,6 +651,8 @@ def watch(cfg, args, report, save):
             report["render"] = verify_render(cfg,jid,args.first,args.last,routes)
             evidence = _scope(routes,telemetry)
             report["qualification"] = evidence
+            if cfg.get("station_contract") and evidence["unverified"]:
+                raise ValueError("实机证据待补："+"；".join(evidence["unverified"]))
             if evidence["mismatches"]:
                 raise ValueError("；".join(evidence["mismatches"]))
             report["status"] = "render_passed"
@@ -606,6 +686,8 @@ def run_cli(cfg, args):
         report.update(status="failed",error=str(err))
         return 1
     finally:
+        report['preflight_passed'] = report.get('preflight',{}).get('passed',False)
+        report['render_passed'] = report['status'] == 'render_passed'
         report["updated"] = datetime.now(timezone.utc).isoformat()
         save()
         print(json.dumps({"status":report["status"],"report":str(location),"job":report.get("job"),

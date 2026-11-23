@@ -68,9 +68,23 @@ def _picture(output, shot, cut):
              "-crf", "18", "-c:a", "copy", "-movflags", "+faststart", output/name)
     metadata = {"code": shot["code"], "shot": shot["shot"], "beat": shot.get("beat", ""),
                 "proxy": name, "picture_handle_in_frames": 0, "picture_handle_out_frames": 0}
+    layers = {}
+    for layer_name in ("overlay.png","endcard.png"):
+        if (cut.parent/layer_name).is_file():
+            layer = "graphics/"+label+"-"+layer_name
+            (output/"graphics").mkdir(exist_ok=True)
+            shutil.copyfile(cut.parent/layer_name,output/layer)
+            layers[layer_name]=layer
+    if layers:
+        metadata["graphics"] = {"files":layers,**{k:shot[k] for k in
+                               ("title","caption","bubble","endcard","overlay") if shot.get(k)}}
     source_receipt = cut.parent/"source-ready.json"
     if source_receipt.is_file():
-        raw = _source(cut.parent, read(source_receipt)["file"])
+        receipt=read(source_receipt)
+        raw = _source(cut.parent,receipt["file"])
+        if receipt.get("sha256"):
+            from .integrity import check
+            check(cut.parent,{raw.name:receipt["sha256"]})
         length = _length(raw)
         if length < shot["frames"]:
             raise ValueError(f"{label} 原始素材短于采用范围")
@@ -87,7 +101,7 @@ def _sound(release, output, timeline, clips, total):
     report_file = release/"acceptance.json"
     report = read(report_file).get("audio_mix") if report_file.is_file() else None
     score = release/"score.wav"
-    if (isinstance(report, dict) and isinstance(report.get("score"), bool) and
+    if (isinstance(report, dict) and report.get("gain_decision") != "programme_loudnorm" and isinstance(report.get("score"), bool) and
             type(report.get("gain_db")) in (int, float) and math.isfinite(report["gain_db"])):
         if not report["score"] or score.is_file():
             if report["score"]:
@@ -109,7 +123,14 @@ def export_edit(store, jid, output):
     if store.job(jid)["state"] != "done":
         raise ValueError("请先完成成片验收")
     folder = (store.root/jid).resolve()
-    release = store.delivery_dir(jid) if hasattr(store, "delivery_dir") else folder
+    anchor=None
+    if hasattr(store,"delivery_record"):
+        release,anchor=store.delivery_record(jid)
+        if anchor:
+            from .integrity import verify_bundle
+            verify_bundle(release,anchor)
+    else:
+        release = store.delivery_dir(jid) if hasattr(store, "delivery_dir") else folder
     if release is None:
         raise ValueError("所选任务已经重新进入制作队列")
     timeline = read(release/"timeline.json")
@@ -125,7 +146,10 @@ def export_edit(store, jid, output):
         shot.setdefault("seconds", shot["frames"]/FPS)
         if not math.isclose(shot["seconds"]*FPS, shot["frames"], abs_tol=1e-6):
             raise ValueError("发行时间线的秒数与帧数不匹配")
-        cuts.append((_source(folder, shot["file"]), shot["seconds"]))
+        cut=_source(folder,shot["file"])
+        if anchor:
+            store.verify_take({"code":int(shot["code"][1:]),"path":cut.parent})
+        cuts.append((cut,shot["seconds"]))
     output = Path(output).resolve()
     if output.is_relative_to(folder):
         raise ValueError("导出位置必须在原任务目录之外")

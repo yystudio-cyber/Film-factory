@@ -16,6 +16,7 @@ from .common import read, write
 class Store:
     def __init__(self, cfg):
         self.root = cfg["data"]
+        self.cfg = cfg
         self.db = self.root / "factory.sqlite3"
         with self.tx() as db:
             db.executescript("""
@@ -40,6 +41,8 @@ class Store:
               id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, review TEXT);
             CREATE TABLE IF NOT EXISTS releases(
               id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT, folder TEXT);
+            CREATE TABLE IF NOT EXISTS take_integrity(code INTEGER PRIMARY KEY,files TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS release_integrity(release INTEGER PRIMARY KEY,files TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS releases_by_job ON releases(job,id);
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, job TEXT, ts REAL, message TEXT);
             """)
@@ -187,10 +190,32 @@ class Store:
         if not record or record[0] != "running":
             raise InterruptedError("任务已停止")
 
-    def register(self, jid, shot, directory):
+    def verify_take(self,take,names=None):
+        from .integrity import check
+        with self.tx() as db:
+            row=db.execute("SELECT files FROM take_integrity WHERE code=?",(take["code"],)).fetchone()
+        if not row:
+            raise ValueError(f"C{take['code']:03} 缺少采用时的指纹；请核对旧版本或显式重审该镜")
+        check(Path(take["path"]),json.loads(row[0]),names)
+
+    def register(self, jid, shot, directory, *, files=None):
         with self.tx() as db:
             self.require_running(db, jid)
-            code = db.execute("INSERT INTO takes(job,shot,path) VALUES(?,?,?)", (jid, shot, str(directory))).lastrowid
+            if self.cfg.get("station_contract"):
+                record = getattr(self,"namespace",None)
+                if record is None:
+                    raise ValueError("缺少当前工厂的独占编号接管记录")
+                # The single production owner holds the station lease; fs publication before
+                # SQL insert burns a number on failure and protects against restored DB backups.
+                ns = read(record)
+                high = db.execute("SELECT seq FROM sqlite_sequence WHERE name='takes'").fetchone()[0]
+                code = max(ns["factory_high"],high)+1
+                write(record,dict(ns,factory_high=code))
+                db.execute("INSERT INTO takes(code,job,shot,path) VALUES(?,?,?,?)",(code,jid,shot,str(directory)))
+            else:
+                code = db.execute("INSERT INTO takes(job,shot,path) VALUES(?,?,?)",(jid,shot,str(directory))).lastrowid
+            if files is not None:
+                db.execute("INSERT INTO take_integrity VALUES(?,?)",(code,json.dumps(files)))
             self.log(db, jid, f"S{shot:02} 候选 C{code:03} 通过自动质检")
             return code
 
@@ -247,12 +272,14 @@ class Store:
                                  (jid,)).fetchone()
         return self.root/jid/release["folder"] if release else self.root/jid
 
-    @staticmethod
-    def link_or_copy(source, target):
-        try:
-            os.link(source,target)
-        except OSError:
-            shutil.copyfile(source,target)
+    def delivery_record(self,jid):
+        with self.tx() as db:
+            row=db.execute("SELECT r.folder,i.files FROM releases r LEFT JOIN release_integrity i "
+                           "ON r.id=i.release JOIN jobs j ON j.id=r.job WHERE r.job=? AND j.state='done' "
+                           "ORDER BY r.id DESC LIMIT 1",(jid,)).fetchone()
+        if not row:
+            return self.delivery_dir(jid),None
+        return self.root/jid/row[0],json.loads(row[1]) if row[1] is not None else None
 
     def publish(self, jid, selected, output, timeline, report):
         """Promote a complete immutable bundle and select it in the same transaction as done."""
@@ -271,12 +298,18 @@ class Store:
             if report.get("audio_mix", {}).get("score"):
                 # The working score cache may be regenerated in place on a future edit.
                 shutil.copyfile(folder/"score.wav",bundle/"score.wav")
-                for name in ("score-ticket.json","score-ready.json"):
+                for name in ("score-ticket.json","score-ready.json","score-selection.json"):
                     if (folder/name).is_file():
                         shutil.copyfile(folder/name,bundle/name)
             output.replace(bundle/"film.mp4")
+            from . import integrity
+            release_files=integrity.capture(bundle,integrity.DELIVERY,integrity.EXTRAS)
+            if (report.get("master_sha256") and release_files["film.mp4"]!=report["master_sha256"] or
+                    report.get("score_sha256") and release_files["score.wav"]!=report["score_sha256"]):
+                raise ValueError("实际发布文件与总审时的母版或配乐指纹不同")
+            write(bundle/"integrity.json",{"schema":1,"files":release_files})
             for filename in filenames:
-                self.link_or_copy(bundle/filename,tmp/filename)
+                shutil.copyfile(bundle/filename,tmp/filename)
             with self.tx() as db:
                 self.require_running(db,jid)
                 live = {row["shot"]:row["code"] for row in db.execute(
@@ -286,8 +319,10 @@ class Store:
                 for filename in filenames:
                     os.replace(tmp/filename,folder/filename)
                 bundle.rename(folder/version)
-                db.execute("INSERT INTO releases(job,folder) VALUES(?,?)",(jid,version))
-                db.execute("UPDATE jobs SET state='done',detail='成片已通过设定的验收门槛',gate=NULL WHERE id=?",(jid,))
+                rel=db.execute("INSERT INTO releases(job,folder) VALUES(?,?)",(jid,version)).lastrowid
+                db.execute("INSERT INTO release_integrity VALUES(?,?)",(rel,json.dumps(release_files)))
+                detail = "已交付；未做对白回听" if report.get("qualification")=="dialogue_unverified" else "成片已通过设定的验收门槛"
+                db.execute("UPDATE jobs SET state='done',detail=?,gate=NULL WHERE id=?",(detail,jid))
                 self.log(db,jid,"已交付 film.mp4、timeline.json、acceptance.json")
         return True
 
@@ -296,6 +331,8 @@ class Store:
             j = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
             if not j:
                 raise ValueError("任务不存在")
+            if op not in {"stop","resume"} and json.loads(j["spec"]).get("station_test"):
+                raise ValueError("隔离验收剧本及素材已冻结，仅允许停止或继续")
             state = j["state"]
             active = state in {"running", "queued"}
             if op == "stop" and state in {"queued","running","review"}:

@@ -83,7 +83,7 @@ class Environment(unittest.TestCase):
                 elif "Evaluate each source unit" in instruction:
                     value={"rows":[{"id":u["id"],"passed":True,"notes":"可见工位","repair_shot":None} for u in data["units"]]}
                 elif "You direct" in instruction:
-                    value = plan
+                    value = getattr(owner,"fixture_plan",plan)
                 elif "Update this shot" in instruction:
                     value = {"shot":dict(data["shot"],beat="lower camera")}
                 elif "English LTX" in instruction:
@@ -96,20 +96,36 @@ class Environment(unittest.TestCase):
                              ("story","composition","identity","continuity","artifacts")},
                              "checks":[{"index":i+1,"result":"seen","evidence":"desk"} for i in range(len(data["shot"]["obligations"]))],
                              "notes":"workshop visible","repair":"show the desk"}
+                    evidence=data["shot"].get("motion_evidence")
+                    if evidence:
+                        n=evidence["frames_scanned"]
+                        value["pulse_checks"]=[{"frame":f,"decision":"motivated","evidence":"fixture movement"}
+                                               for f in evidence.get("pulse_frames",[])]
+                        value["motion_checks"]=[{"frame":next(f for f in evidence["shown_frames"] if i*n<=3*f<(i+1)*n),
+                            "passed":True,"evidence":"synthetic bench stays still"} for i in range(3)]
                 elif "Audit the actual" in instruction:
                     value = {"passed":not owner.reject_final,"notes":"片序符合要求"}
                 else:
                     raise AssertionError(instruction)
                 self.reply({"choices":[{"message":{"content":json.dumps(value)}}]})
             def do_GET(self):
+                if self.path=="/queue":
+                    return self.reply({"queue_running":[],"queue_pending":[]})
                 if self.path.startswith("/history/"):
                     pid = self.path.split("/")[-1]
                     graph=owner.submitted[int(pid)-1]
                     media_file="draft.mp4" if graph["1"]["class_type"]=="FixtureDraft" else "fixture.mp4"
+                    frame_total=graph["1"]["inputs"]["frames"]
+                    if frame_total in getattr(owner,"timed_media",{}):
+                        media_file=owner.timed_media[frame_total].name
                     return self.reply({pid:{"outputs":{"2":{"videos":[{"filename":media_file,"type":"output"}]}},
-                                             "status":{"status_str":"success"}}})
+                                             "status":{"status_str":"success","completed":True}}})
                 if self.path.startswith("/view?"):
-                    return self.reply(((root/"draft.mp4") if "filename=draft.mp4" in self.path else clip).read_bytes())
+                    from urllib.parse import parse_qs,urlsplit
+                    name = parse_qs(urlsplit(self.path).query).get("filename",[""])[0]
+                    files = {p.name:p for p in getattr(owner,"timed_media",{}).values()}
+                    files.update({"draft.mp4":root/"draft.mp4","fixture.mp4":clip})
+                    return self.reply(files[name].read_bytes())
                 if self.path.startswith("/v1/audio?"):
                     return self.reply(score.read_bytes())
                 self.reply({})
@@ -347,18 +363,20 @@ class Environment(unittest.TestCase):
         jid=self.new()
         calls=[]
         nonce=[]
+        allow_lookup=False
         def lose_receipt(url,body=None,**kwargs):
             if url.endswith("/prompt") and not calls:
                 calls.append(original(url,body,**kwargs))
                 nonce.append(body["client_id"])
                 raise ConnectionError("response lost after acceptance")
-            if url.endswith("/history?max_items=128") and nonce:
+            if url.endswith("/history?max_items=128") and nonce and allow_lookup:
                 return {"1":{"prompt":[0,"1",{},{"client_id":nonce[0]}]}}
             return original(url,body,**kwargs)
         with patch("factory.graphs.request",side_effect=lose_receipt):
-            with self.assertRaisesRegex(ConnectionError,"response lost"):
+            with self.assertRaisesRegex(RuntimeError,"回执不确定"):
                 self.execute(jid)
             self.store.status(jid,"failed","response lost")
+            allow_lookup=True
             self.store.command(jid,"resume")
             self.execute(jid)
         self.assertEqual(len(self.submitted),3)

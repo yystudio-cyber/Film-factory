@@ -41,5 +41,12 @@ class Station:
                 value["queue"] = {"running":len(queue["queue_running"]),"pending":len(queue["queue_pending"])}
             except (OSError,ValueError,KeyError):
                 pass
+            if self.cfg.get("station_contract"):
+                import socket
+                try:
+                    with socket.create_connection(("127.0.0.1",8765),timeout=.5):
+                        value["ownership"]="旧 Studio 仍在监听，工厂生产暂停"
+                except OSError:
+                    value["ownership"]="独占模式；生产期间保留旧写入端口"
             self.sample,self.stamp = value,time.monotonic()
             return value

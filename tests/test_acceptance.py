@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import tempfile
 import threading
@@ -151,7 +152,7 @@ class StationQualification(unittest.TestCase):
             report={"preflight":{"routes":{},"checks":{k:{"evidence":{"model":k}} for k in ("text","vision")}}}
             submitted=[]
             def server(url,body=None,**kwargs):
-                if url.endswith("/api/batches"):
+                if url.endswith("/api/station-test"):
                     submitted.append(body)
                     return {"ids":["a"*32]}
                 return {"state":"queued","detail":"queued"}
@@ -172,29 +173,47 @@ class StationQualification(unittest.TestCase):
         test.reject_first = False
         first, last = "first.png", "anchor.png"
         (test.cfg["assets"]/first).write_bytes((test.cfg["assets"]/last).read_bytes())
-        director_plan = test.engine.director.plan
-        def plan(*args,**kwargs):
-            result = director_plan(*args,**kwargs)
-            result["shots"][1]["start"]=first
-            return result
+        (test.cfg["assets"]/"private-client.png").write_bytes(b"UNSELECTED")
+        (test.cfg["assets"]/"private-client.txt").write_text("NEVER_SHARE_OTHER_CAPTION")
+        (test.cfg["assets"]/"first.txt").write_text("NEVER_SHARE_SELECTED_SIDECAR")
+        # Only inference is substituted. The actual input and delivery media use station geometry.
+        from factory import media
+        test.cfg.update(width=1920,height=1080)
+        media.ff("-f","lavfi","-i","smptebars=size=1920x1088:rate=24",
+                 "-f","lavfi","-i","sine=f=450:r=48000","-t",str(49/24),
+                 "-c:v","libx264","-threads:v","2","-preset","ultrafast","-c:a","aac",
+                 test.cfg["data"].parent/"fixture.mp4")
         port = int(test.url.rsplit(":",1)[1])
         args = SimpleNamespace(run_id="sample",first=first,last=last,port=port,wait_minutes=1)
         report={"preflight":{"routes":{},"checks":{k:{"evidence":{"model":k}} for k in ("text","vision")}}}
         worker = threading.Thread(target=test.engine.worker,daemon=True)
-        with patch.object(test.engine.director,"plan",side_effect=plan):
-            worker.start()
-            try:
-                status = station.watch(test.cfg,args,report,lambda:None)
-            finally:
-                test.engine.shutdown.set()
-                worker.join(5)
+        worker.start()
+        try:
+            status = station.watch(test.cfg,args,report,lambda:None)
+        finally:
+            test.engine.shutdown.set()
+            worker.join(5)
         self.assertEqual(status,0)
+        wire = json.dumps([body for body,_,_ in test.calls])
+        self.assertNotIn("private-client",wire)
+        self.assertNotIn("NEVER_SHARE",wire)
+        self.assertFalse(any(b"UNSELECTED" in upload for upload in test.uploaded))
         self.assertEqual([x["route"] for x in report["render"]["shots"]],["T2V","I2V","FLF"])
         self.assertEqual(report["qualification"]["profile_evidence"],"partial")
         self.assertTrue(report["qualification"]["unverified"])
         jid=report["job"]
         timeline=test.engine.store.delivery_dir(jid)/"timeline.json"
         rows=read(timeline)
+        self.assertEqual([x["source"]["frames"] for x in report["render"]["shots"]],[49,49,49])
+        self.assertEqual([report["render"]["master"][k] for k in ("width","height","frames")],[1920,1080,144])
+        evidence_dir=os.getenv("FILM_TEST_EVIDENCE_DIR")
+        if evidence_dir:
+            import shutil
+            output=Path(evidence_dir)
+            output.mkdir(parents=True,exist_ok=False)
+            shutil.copyfile(timeline.parent/"film.mp4",output/"synthetic-6s.mp4")
+            write(output/"evidence.json",{"kind":"http_fixtures_real_media","routes":report["render"]["shots"],
+                  "master":report["render"]["master"],"asset_isolation_checked":True})
         rows[1]["start"]="previous"
         write(timeline,rows)
         with self.assertRaisesRegex(ValueError,"I2V"):

@@ -19,15 +19,15 @@ class StoryboardTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.store = Store({"data": Path(tmp.name)})
-        self.jid = self.store.add({"title":"夜研","seconds":6,"music":True,"script":"进入办公室",
+        self.jid = self.store.add({"title":"园艺","seconds":6,"music":True,"script":"进入温室",
                                    "requirements":"硬切","mode":"review"})
         self.folder = self.store.root / self.jid
-        self.plan = {"shots":[{"beat":"隧道","seconds":2,"frames":48,"start":"","end":""},
+        self.plan = {"shots":[{"beat":"温室","seconds":2,"frames":48,"start":"","end":""},
                               {"beat":"办公室","seconds":4,"frames":96,"start":"previous","end":"office.jpg",
                                "anchors":["lead.png"]}],
-                     "crew":{"1":{"camera":{"framing":"全景"},"sound":{"bridge":"隧道轰鸣"}},
+                     "crew":{"1":{"camera":{"framing":"全景"},"sound":{"bridge":"风扇轻响"}},
                              "2":{"camera":{"framing":"旧版近景"}}},
-                     "coverage":[{"id":"剧001","text":"进入办公室",
+                     "coverage":[{"id":"剧001","text":"进入温室",
                                   "checks":[{"shot":2,"expect":"看到办公区","channel":"visual"}]}]}
 
     def take(self, number):
@@ -80,7 +80,7 @@ class StoryboardTest(unittest.TestCase):
         self.assertEqual(b["departments"]["camera"]["framing"],"修订近景")
         self.assertEqual(b["departments"]["sound"]["bridge"],"回声渐弱")
         self.assertEqual(result["gate"],2)
-        self.assertEqual(b["checks"][0]["original"],"进入办公室")
+        self.assertEqual(b["checks"][0]["original"],"进入温室")
         self.assertEqual(b["references"][0]["url"],f"/api/frames/{self.jid}/S01-V1-deadbeef01/4")
         self.assertEqual(b["references"][1]["url"],f"/api/storyboard/{self.jid}/refs/{key}")
         self.assertEqual(b["references"][-1],{"role":"角色指认帧","name":f"小程 · C{first:03} · 抽帧 3/5",

@@ -9,7 +9,7 @@ from .story import obligations
 ROLES = {
     "camera": ("摄影与美术执行单", ("framing", "blocking", "continuity", "edit_point"),
                "Act as cinematographer and art supervisor. Specify shot scale, camera move, subject blocking, "
-               "screen direction, cast/wardrobe/props/location/light to preserve, and a motivated cut point. "
+               "motivated screen direction, prop hand and position, cast, wardrobe, location, light source and color to preserve, and a motivated cut point. "
                "Name only assets actually supplied. Do not invent dramatic events."),
     "sound": ("声音与剪辑执行单", ("sync", "ambience", "bridge", "mix_intent"),
               "Act as sound editor. Preserve exact sync lines, planned silence and narration. Distinguish "

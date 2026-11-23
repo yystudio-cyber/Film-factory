@@ -5,6 +5,7 @@ import time
 import secrets
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 from contextlib import nullcontext
 
 from .common import ServiceHTTPError, assets, image_url, request
@@ -30,7 +31,10 @@ class Director:
     def ask(self, instruction, data, images=(), tokens=2500, task="文本导演"):
         base, model, env, deepseek = self.endpoint(bool(images))
         key = os.environ.get(env)
-        if not key:
+        local = urlsplit(base).hostname in {"localhost","127.0.0.1","::1"}
+        if not local and self.cfg.get("allow_hosted_models") is not True:
+            raise ValueError("托管导演尚未授权。请核准本次素材范围和模型费用，或配置本机视觉语言模型")
+        if not key and not local:
             raise ValueError("缺少模型密钥环境变量 " + env)
         payload = json.dumps(data, ensure_ascii=False)
         content = [{"type":"text","text":payload}]
@@ -47,7 +51,7 @@ class Director:
             for attempt in range(3):
                 try:
                     reply = request(base.rstrip("/")+"/chat/completions", body,
-                                    headers={"Authorization":"Bearer "+key}, timeout=240)
+                                    headers={"Authorization":"Bearer "+key} if key else {}, timeout=240)
                     break
                 except ServiceHTTPError as err:
                     if err.status != 429 or attempt==2:
@@ -88,6 +92,26 @@ class Director:
         self._vision_verified = key
 
     def plan(self, spec, clip_refs=None):
+        from .timecode import authored_links, breakdown
+        locked = breakdown(spec["script"],spec["seconds"],spec["requirements"])
+        if locked:
+            # Keep long authored films within the model context, never rewrite source passages.
+            groups = [locked[start:start+9] for start in range(0,len(locked),9)]
+            combined = None
+            for group in groups:
+                data = dict(spec, timed_shots=group, seconds=sum(x["seconds"] for x in group))
+                if combined is not None:
+                    data.update(previous_beat=combined["shots"][-1]["beat"],bible=combined["bible"])
+                plan = self.outline(data,clip_refs,continuation=combined is not None)
+                for timing, shot in zip(group,plan["shots"],strict=True):
+                    shot["source_clip"] = timing
+                    authored_links(shot)
+                if combined is None:
+                    combined = plan
+                else:
+                    combined["shots"].extend(plan["shots"])
+            self.validate_plan(combined,spec['seconds'], assets(self.cfg) | (clip_refs or {}))
+            return combined
         if spec["seconds"] <= 90:
             return self.outline(spec, clip_refs)
         instruction = """Divide the entire screenplay into coherent sequences of 2–60 whole
@@ -123,18 +147,26 @@ and instrumental score brief. Return {"bible":"...", "music":"...", "sequences":
     def outline(self, spec, clip_refs=None, continuation=False):
         catalog = assets(self.cfg)
         catalog.update(clip_refs or {})
-        notes = {name: p.with_suffix(".txt").read_text("utf-8-sig")[:800]
-                 if p.with_suffix(".txt").exists() else "" for name, p in catalog.items()}
+        notes = dict.fromkeys(catalog,"")
+        if self.cfg.get("allow_sidecars",True):
+            for name,path in catalog.items():
+                sidecar=path.with_suffix(".txt")
+                if name not in (clip_refs or {}) and sidecar.is_file() and not sidecar.is_symlink() and sidecar.resolve().parent==path.parent.resolve():
+                    with sidecar.open(encoding="utf-8-sig") as handle:
+                        notes[name]=handle.read(800)
         notes.update({k: "已指定片库编号的最后一帧" for k in clip_refs or {}})
         instruction = """You direct the supplied film. Preserve narrative order, all specific beats,
 names, spoken lines, requested titles and ending. Work from the script and creative brief.
-Design motivated cuts; use previous accepted tail for continuity, and cut to a fresh setup
+Prefer observable actions, plausible performance and practical light. Preserve source dialogue verbatim; invent no slogans. Design motivated cuts; use previous accepted tail for continuity, and cut to a fresh setup
 when location/time changes. Use the literal sound value "silence" for intentional silence. Return {"bible":"recurring cast, wardrobe, locations, light and sound",
 "music":"instrumental scoring brief","shots":[{"beat":"specific visible event + camera movement",
 "seconds":4,"start":"previous","end":"","sound":"diegetic sound bridge",
 "dialogue":"","narration":"","title":"","caption":"","overlay":"","anchors":[],"subjects":[],"camera_motion":"moving"}]}.
 camera_motion is locked or moving and describes the camera, independent of subject motion.
 subjects lists at most three recurring characters that must be visibly identifiable here.
+For requested #tag eyes bubbles put the exact hashtag in the relevant shot's bubble field.
+Return a single plan-level endcard string for requested closing lockup copy, verbatim from the script.
+Never place that copy in shot titles. For foreign dialogue add dialogue_language as its ISO language code.
 Use exactly the same names from the screenplay/bible throughout, including after location changes.
 Omit off-camera speakers, implied or unidentifiable figures. These names link accepted on-screen reference frames.
 anchors lists up to two catalog image names for canonical identity or location QA, whenever available.
@@ -146,6 +178,9 @@ Use empty strings for absent elements. Use whole seconds, 2–8 per shot, favor 
 sum MUST match requested seconds. When narration_timing_corrections is present, use those recorded
 line lengths to reallocate shots or distribute the literal text across adjacent cuts in order, preserving
 the full script and film duration. Budget enough time for speech. Keep the outline compact."""
+        if spec.get("timed_shots"):
+            instruction += (" Follow timed_shots exactly, one shot per segment with its exact duration. "
+                            "For split segments divide action and lines in chronological order without repetition.")
         if continuation:
             instruction += " This sequence follows the previous beat. Its first shot MAY use previous."
         data = dict(spec, assets=notes)
@@ -153,6 +188,9 @@ the full script and film duration. Budget enough time for speech. Keep the outli
             try:
                 p = self.ask(instruction, data, tokens=min(24000, 2200 + spec["seconds"] * 27))
                 self.validate_plan(p, spec["seconds"], catalog, continuation)
+                if spec.get("timed_shots") and [s["seconds"] for s in p["shots"]] != [
+                        row["seconds"] for row in spec["timed_shots"]]:
+                    raise ValueError("镜数与逐镜时长须严格匹配 timed_shots")
                 return p
             except (KeyError, ValueError, TypeError) as err:
                 data["correction"] = str(err)
@@ -206,6 +244,9 @@ Return {"shot":{...complete shot...}}. This is a local shot revision.""",
         updated = result["shot"]
         self.validate_plan({"bible":"","music":"","shots":[updated]}, shot["seconds"], catalog,
                            continuation=not first_shot)
+        for field in ("source_clip","endcard","bubble","dialogue_language"):
+            if field in shot and field not in updated:
+                updated[field] = shot[field]
         return updated
 
     def prompt(self, spec, bible, shot, feedback):
@@ -237,7 +278,7 @@ revision notes without altering continuity. Return {"prompt":"one paragraph"}.""
                 if (90 <= len(value.split()) <= 200 and "Sound:" in value and value.split("Sound:")[-1].strip()
                     and ("static camera" not in value.lower() or (shot["start"] and shot.get("camera_motion")!="moving"))
                     and (not shot["start"] or shot.get("camera_motion")!="locked" or value.startswith(locked_phrase))
-                    and (not shot["dialogue"] or shot["dialogue"] in value)):
+                    and (not shot["dialogue"] or shot["dialogue"] in value.split('Sound:')[-1])):
                     return value
             data["format_error"] = "Check length, Sound: ending, camera lock and verbatim dialogue."
         raise ValueError("导演提示词连续三次未通过格式检查")
@@ -269,12 +310,42 @@ hear audio. Return {"scores":{...},"checks":[{"index":1,"result":"seen","evidenc
                             " and evidence describing identifiable details. Compare any labeled past appearance"
                             " of this person, respecting intentional wardrobe, time and location changes."
                             " Mark identity below threshold for visible mismatches.")
-        verdict = self.ask(instruction, {"requirements": spec["requirements"], "bible": plan["bible"],
+        rubric = spec.get("aesthetic_rules",[])
+        if rubric:
+            instruction += (" Judge each supplied aesthetic rule on visible evidence in its stated scope, "
+                "allowing post layers to be added later. Return aesthetic_checks in order with "
+                "index (1-based), passed (boolean) and evidence citing specific frames. A rejection requires an actionable fix.")
+        if shot.get("motion_evidence"):
+            instruction += (" Inspect the dense native-frame boards in temporal order, including abrupt transitions. "
+                "Return motion_checks in early, middle, late order. For each third cite one actual numbered frame "
+                "from that third, a boolean passed and specific evidence of movement, hand/prop contact, eyeline, "
+                "performance, texture or transition. Cite intentional flashes as such when supported by the script. "
+                "A static pose alone cannot establish an action. Use frame as the zero-based native integer index.")
+        pulses=shot.get("motion_evidence",{}).get("pulse_frames",[])
+        if pulses:
+            instruction += (" For each marked pulse_frames entry in order, inspect its preceding and following "
+                "images against script intent. Return pulse_checks with frame, decision (motivated, defect or unclear) "
+                "and specific visible evidence. A normal occlusion, gesture, or intentional flash is motivated. "
+                "The numerical signal alone is never evidence of a defect.")
+        verdict = self.ask(instruction, {"requirements": spec["requirements"], "aesthetic_rules":rubric,"bible": plan["bible"],
                                   "shot": shot, "image_order": roles}, pictures, task="抽帧与跨镜审片")
         scores = verdict["scores"]
         if any(type(scores.get(k)) is not int or not 1 <= scores[k] <= 5 for k in DIMS):
             raise ValueError("Invalid visual review scores")
         verdict["passed"] = min(scores[k] for k in DIMS) >= self.cfg["threshold"]
+        if shot.get("motion_evidence"):
+            from .motion import verify_windows
+            from .motion import verify_pulses
+            pulse_ok=verify_pulses(verdict,pulses)
+            motion_ok = verify_windows(verdict, shot["motion_evidence"]) and pulse_ok
+            verdict["passed"] = verdict["passed"] and motion_ok
+        if rubric:
+            rows = verdict.get("aesthetic_checks")
+            if (not isinstance(rows,list) or [r.get("index") for r in rows]!=list(range(1,len(rubric)+1))
+                    or any(type(r.get("passed")) is not bool or not isinstance(r.get("evidence"),str)
+                           or not r["evidence"].strip() for r in rows)):
+                raise ValueError("审美检查缺少逐条可复核的依据")
+            verdict["passed"] = verdict["passed"] and all(r["passed"] for r in rows)
         if shot.get("subjects"):
             identifications = verdict.get("subjects")
             if not isinstance(identifications,list) or [r.get("name") for r in identifications]!=shot["subjects"]:
@@ -304,19 +375,19 @@ hear audio. Return {"scores":{...},"checks":[{"index":1,"result":"seen","evidenc
         return verdict
 
     def final_review(self, spec, plan, boards=()):
-        shots_per_board = 16  # media.contact_sheets labels one midpoint per shot, in order.
+        shots_per_board = 16  # Each board covers up to 16 shots.
         if not plan or len(boards) != (len(plan) + shots_per_board - 1) // shots_per_board:
             raise ValueError("成片接触表数量与时间线不一致")
         instruction = """Audit the actual accepted timeline and per-shot observations against
 the locked original script and requirements in brief. Preserve names, dialogue and titles
 verbatim, except where a supplied user revision explicitly changes them. The contact sheets
-show one midpoint per shot from the assembled master, left to right and top to bottom.
+show actual IN / MID / OUT frames per shot from the assembled master, with global frame numbers.
 Frame labels give global shot number and time. Judge only the assigned inclusive shot_range
 and its incoming cut. Other screenplay passages provide context: evaluate a beat where it
 belongs. Compare identity, location, lighting, screen direction, action order and pacing.
 For an incoming cut, compare the last shot on the context sheet with the first assigned
 shot and their observations. Distinguish a motivated hard cut from a continuity error.
-Midpoints do not prove movement through a cut, speech or audio. Use per-shot checks and
+Compare OUT to the next IN and the planned sound bridge. These pictures cannot establish audible content. Use per-shot checks and
 transcripts where relevant. Name missing evidence. Return {"passed":true or false,
 "notes":"用中文按镜号记录所见关键剧情、剪辑和偏差","repair_shot":integer or null}.
 Give a global shot number only if a change to that assigned shot can fix the issue.

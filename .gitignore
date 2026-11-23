@@ -5,3 +5,11 @@ workflows/
 runs/
 assets/
 .venv/
+.env
+.env.*
+*.zip
+*.log
+*.sqlite3*
+/evidence/
+/exports/
+/workstation-reports/

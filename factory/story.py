@@ -29,6 +29,13 @@ def source_units(spec):
     return units
 
 
+def literal_field(shot,channel):
+    if channel=="title":
+        return "\n".join(filter(None,[shot.get("title",""),shot.get("bubble",""),
+                                      shot.get("endcard",{}).get("text","")]))
+    return shot.get(channel,"")
+
+
 def coverage(director, spec, plan):
     units = source_units(spec)
     mapped = []
@@ -41,7 +48,7 @@ anything is missing, misordered, contradicted or invented. Do not invent coverag
 concise, falsifiable obligations for the shots, in Chinese. Return
 {"rows":[{"id":"source ID","covered":true,"notes":"reason","checks":[
 {"shot":1,"expect":"specific obligation", "channel":"visual","literal":""}]}]}.
-Use channel visual, dialogue, narration, title, caption, audio, or edit. For explicit exact speech,
+Use channel visual, dialogue, narration, title, caption, audio, or edit. Exact bubble and endcard text are title-channel graphics. For explicit exact speech,
 titles or captions copy the required literal directly from this source unit into literal, otherwise use empty.
 Mark production instructions about music, edit, titles and narration as post-production
 in the obligation. Uncovered units can have empty checks."""
@@ -68,7 +75,7 @@ in the obligation. Uncovered units can have empty checks."""
                 if literal:
                     if literal not in unit["text"] or channel not in {"dialogue","narration","title","caption"}:
                         raise ValueError("原文验收项引用了无效的逐字要求：" + unit["id"])
-                    if literal not in shots[c["shot"]-1].get(channel,""):
+                    if literal not in literal_field(shots[c["shot"]-1],channel):
                         row["covered"] = False
                         row["notes"] += " 缺少原文 " + literal
             mapped.append({**unit, "covered":row["covered"], "notes":row["notes"], "checks":checks})
@@ -140,7 +147,7 @@ def _literal_revision(note, channel, expected, sole, unique_channel):
             if target:
                 return "replace",target[1][1:-1]
             if tail and not re.search(r"[，“”「」；,。]|\b(?:and|but)\b", tail,re.I):
-                # Unquoted exact-copy form: 『标题改为：杭州夜研』.
+                # Unquoted exact-copy form: 『标题改为：花园园艺』.
                 if clause[replace.end():].lstrip().startswith(("：",":")):
                     return "replace",tail
         if re.search(rf"(?:删除|移除|去掉|取消|删去|remove|delete|omit)\s*(?:本镜|这句|该|the\s+)?(?:{alias})"
@@ -180,7 +187,7 @@ def _literal_evidence(ledger, timeline):
                 if update:
                     action,expected = update
                     revisions.append(note)
-            field = cut.get(channel,"")
+            field = literal_field(cut,channel)
             row = dict(shot=index, code=cut.get("code"), channel=channel, source_literal=original,
                        expected=expected, adopted=field, rule=action, user_revisions=revisions)
             if action == "remove":
@@ -190,7 +197,9 @@ def _literal_evidence(ledger, timeline):
                 passed = bool(field.strip())
             else:
                 passed = _literal_match(expected,field)
-            if channel == "dialogue":
+            if channel == "dialogue" and cut.get("speech_review") == "unverified":
+                row["audio_status"] = "unverified"
+            elif channel == "dialogue":
                 transcript = cut.get("transcript","")
                 row["transcript"] = transcript
                 if action == "remove":
@@ -205,14 +214,14 @@ def _literal_evidence(ledger, timeline):
 
 def audit_edit(director, ledger, timeline, picture_review):
     """Ask the text editor to decide from observations, actual titles/lines and source spans."""
-    evidence = [{k: s.get(k) for k in ("shot","code","observations","checks","transcript","dialogue","narration","title",
-                 "caption","seconds","changes","revision_history","start","sound")} for s in timeline]
+    evidence = [{k: s.get(k) for k in ("shot","code","observations","checks","speech_review","transcript","dialogue","narration","title",
+                 "caption","bubble","endcard","seconds","changes","revision_history","start","sound")} for s in timeline]
     literal_evidence = _literal_evidence(ledger,timeline)
     rows = []
     for i in range(0,len(ledger),16):
         group = ledger[i:i+16]
         result = director.ask("""Evaluate each source unit against accepted-shot evidence and the
-visual master audit. Distinguish intended sound from measured audio and observed image content.
+visual master audit. For speech_review=unverified, judge written line alignment only; never claim a listening check. Distinguish intended sound from measured audio and observed image content.
 Check literal lines, titles, order, causal connections, character and location. User-requested
 later revisions override the initial text only where explicit. Cite shot numbers and concrete
 evidence. literal_checks records exact matches from the adopted take. For rule=editor, evaluate

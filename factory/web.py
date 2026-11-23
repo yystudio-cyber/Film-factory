@@ -17,18 +17,29 @@ def specification(body):
     if not isinstance(body, dict):
         raise ValueError("影片条目应为 JSON 对象")
     spec = {k:body.get(k, "") for k in ("title","script","requirements","seconds","mode","music")}
+    if not spec["title"] and isinstance(spec["script"],str) and spec["script"].strip():
+        spec["title"] = spec["script"].strip().splitlines()[0][:64]
     if not all(isinstance(spec[k],str) and spec[k].strip() for k in ("script","requirements","title")):
         raise ValueError("需要片名、剧本和制作要求")
     if len(spec["script"])+len(spec["requirements"]) > 100000:
         raise ValueError("剧本与要求总长度上限为十万字符")
+    if spec["seconds"] in (None,""):
+        from .timecode import requested_seconds
+        spec["seconds"]=requested_seconds(spec["script"],spec["requirements"])
     if type(spec["seconds"]) is not int or not 2 <= spec["seconds"] <= 600:
         raise ValueError("目标时长为 2–600 整秒")
+    from .timecode import breakdown
+    breakdown(spec["script"],spec["seconds"],spec["requirements"])
     if spec["mode"] not in {"auto","review"} or type(spec["music"]) is not bool:
         raise ValueError("无效的生产模式或配乐设置")
     if type(body.get("render_drafts",False)) is not bool:
         raise ValueError("动态草稿选项须为布尔值")
+    if body.get("draft_policy","all") not in {"all","risk"}:
+        raise ValueError("草稿策略仅支持 all 或 risk")
     if body.get("render_drafts"):
         spec["render_drafts"] = True
+        if body.get("draft_policy")=="risk":
+            spec["draft_policy"] = "risk"
     brief = body.get("production_brief",{})
     if not isinstance(brief,dict) or brief.keys()-{"audience","objective","channel"} or any(
             not isinstance(v,str) or len(v)>600 for v in brief.values()):
@@ -148,8 +159,11 @@ def handler(cfg, store):
                         if take:
                             return self.file(Path(take["path"])/"cut.mp4")
                     else:
-                        release = store.delivery_dir(jid)
+                        release,record = store.delivery_record(jid)
                         if release:
+                            if record:
+                                from .integrity import check
+                                check(release,record,(artifact,))
                             return self.file(release/artifact)
                 self.send_error(404)
             except (BrokenPipeError, ConnectionResetError):
@@ -167,6 +181,13 @@ def handler(cfg, store):
                 if not 0 < length <= 16_000_000 or self.headers.get_content_type()!="application/json":
                     return self.send_error(400)
                 body = json.loads(self.rfile.read(length))
+                if self.path == "/api/station-test":
+                    from .acceptance import isolated_brief
+                    token = body["token"]
+                    if not isinstance(token,str) or not re.fullmatch(r"station-accept-[A-Za-z0-9_-]{1,56}",token):
+                        raise ValueError("无效的实机验收编号")
+                    spec = isolated_brief(cfg, body["first"], body["last"],body["hashes"])
+                    return self.respond({"ids": store.add_many([spec],token)},201)
                 if self.path == "/api/batches":
                     rows = body.get("films")
                     if not isinstance(rows,list) or not 1<=len(rows)<=50:
@@ -189,6 +210,9 @@ def handler(cfg, store):
                     if tier not in {"master","draft"}:
                         raise ValueError("请选择正片或动态草稿")
                     selected = drafts.settings(cfg) if tier=="draft" else cfg
+                    if selected.get("station_contract"):
+                        from .common import canvas
+                        graphs.check_native_profile(profile,route,canvas(selected))
                     write(selected["workflows"]/(route+".json"),profile)
                     return self.respond({"saved":route,"tier":tier})
                 m = re.fullmatch(r"/api/jobs/([a-f0-9]{32})/(stop|resume|approve|revise|batch)", self.path)
@@ -207,6 +231,8 @@ def serve(cfg, port):
         store = Store(cfg)
         http = ThreadingHTTPServer(("127.0.0.1",port),handler(cfg,store))
         store.recover()
+        if cfg.get("station_contract"):
+            print("工作站资源："+json.dumps(Station(cfg).read(),ensure_ascii=False),flush=True)
         engine = Factory(cfg,store)
         thread = threading.Thread(target=engine.worker,daemon=True)
         thread.start()
@@ -217,3 +243,4 @@ def serve(cfg, port):
             engine.shutdown.set()
             http.server_close()
             thread.join()
+            engine.owner.close()

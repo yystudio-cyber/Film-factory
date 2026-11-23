@@ -177,12 +177,39 @@ def _links(raw, names):
 
 
 def apply_links(spec,plan):
+    assignments = {}
+    shots = plan["shots"]
     for number,bindings in spec.get("studio_links",{}).items():
         idx = int(number)
-        if idx < 1 or idx > len(plan["shots"]):
-            raise ValueError(f"导入引用需要 S{idx:02}，当前导演只计划了 {len(plan['shots'])} 镜")
-        shot = plan["shots"][idx-1]
-        shot.update(bindings)
+        # Legacy map S02 means the original narrative beat when a timed script is present.
+        if any(s.get("source_clip") for s in shots):
+            group=[i for i,s in enumerate(shots) if s.get("source_clip",{}).get("clip")==idx]
+        else:
+            group=[idx-1] if 1<=idx<=len(shots) else []
+        if not group:
+            raise ValueError(f"导入引用需要 S{idx:02}，当前分镜缺少该段")
+        for field,value in bindings.items():
+            assignments[group[0] if field=="start" else group[-1],field]=value
+    for directive in spec.get("requirements","").splitlines():
+        if not re.match(r"^\s*Clip\s+\d+\.\d+\s+(?:首帧|尾帧)",directive,re.I):
+            continue
+        m=re.fullmatch(r"\s*Clip\s+(\d+)\.(\d+)\s+(首帧|尾帧)\s*[:：]\s*(C\d+|上一镜已采用尾帧|previous)\s*",directive,re.I)
+        if not m:
+            raise ValueError("子段首尾帧只能绑定明确已采用的 C 编号或上一镜已采用尾帧")
+        target=next((i for i,s in enumerate(shots) if (s.get("source_clip",{}).get("clip"),
+                    s.get("source_clip",{}).get("part"))==(int(m[1]),int(m[2]))),None)
+        if target is None:
+            raise ValueError("子段引用找不到对应的剧本分段")
+        field="start" if m[3]=="首帧" else "end"
+        value=f"C{int(m[4][1:]):03}" if m[4].lower().startswith("c") else "previous"
+        if value=="previous" and (field=="end" or target==0):
+            raise ValueError("该子段无法引用上一镜")
+        if (target,field) in assignments and assignments[target,field]!=value:
+            raise ValueError("子段与导入片库引用冲突，请核对采用版本")
+        assignments[target,field]=value
+    for (idx,field),value in assignments.items():
+        shots[idx][field]=value
+    for idx,shot in enumerate(shots,1):
         if shot.get("end") and not shot.get("start"):
             raise ValueError(f"S{idx:02} 尾帧需要首帧；请补充首帧映射或调整分镜")
     return plan
@@ -197,6 +224,18 @@ def project_config(cfg,spec):
     path = cfg["data"]/"studio-imports"/bundle/"assets"
     if not path.is_dir():
         raise ValueError("Studio 素材快照缺失，请恢复项目目录")
+    if spec.get("station_test"):
+        doc = read(path.parent/"manifest.json")
+        if doc.get("schema") != "station-test-v1":
+            raise ValueError("工作站测试素材清单不匹配")
+        if hashlib.sha256(json.dumps(doc,sort_keys=True,ensure_ascii=False).encode()).hexdigest()!=bundle:
+            raise ValueError("实机测试素材清单指纹改变")
+        for entry in doc["assets"]:
+            file = path/entry["name"]
+            if file.is_symlink() or _hash(file)!=entry["sha256"]:
+                raise ValueError("验收参考图指纹改变")
+        return dict(cfg,assets=path,asset_allowlist=[e["name"] for e in doc["assets"]],
+                    allow_sidecars=False,allow_hosted_models=cfg.get("allow_hosted_station_tests",False))
     return {**cfg,"assets":path}
 
 

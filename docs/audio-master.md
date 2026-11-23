@@ -33,7 +33,7 @@
 集成样例使用 2 秒普通镜、2 秒对白镜、2 秒静音镜，共 144 帧。为了从 AAC 中分别测出两个声部的变化，使用不同频率的测试音代替现场声与配乐。本轮实测对白区间的配乐频率下降约 10.3 dB，前景频率变化约 −0.04 dB；末段两种测试音均静音。最终母版实测约 −18.04 LUFS、−15.33 dBTP。真实语音、音乐旋律和环境声的结果会随输入变化。
 
 ```powershell
-D:\ai\venv\Scripts\python.exe -m unittest discover -s tests -p test_master_audio.py -v
+python -m unittest discover -s tests -p test_master_audio.py -v
 ```
 
 | 工具或项目 | 取舍 |
@@ -53,5 +53,5 @@ D:\ai\venv\Scripts\python.exe -m unittest discover -s tests -p test_master_audio
 在 Windows 工作站项目目录运行以下命令，可独立验收实际 SAPI 语音和本机 faster-whisper。默认中文句子的镜长预算为 6 秒。CLI 会生成临时 WAV、测量可听电平及长度、实际转录并输出含语音名称、相似度、逐段内容的 JSON。失败时退出码为 1。指定语种或特殊发音的项目可用 `--line` 替换样句。
 
 ```powershell
-D:\ai\venv\Scripts\python.exe -m factory.speech --config config.local.json
+python -m factory.speech --config config.local.json
 ```

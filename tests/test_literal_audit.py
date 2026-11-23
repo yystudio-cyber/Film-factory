@@ -19,9 +19,9 @@ class LiteralAudit(unittest.TestCase):
 
     def test_title_caption_narration_mismatch_vetoes_editor_pass(self):
         for channel in ("title","caption","narration"):
-            for adopted in ("","苏州夜班","杭州夜斑"):
+            for adopted in ("","海岛夜班","花园夜斑"):
                 with self.subTest(channel=channel,adopted=adopted):
-                    row = self.audit([(1,channel,"杭州夜班")],[{channel:adopted}])
+                    row = self.audit([(1,channel,"花园夜班")],[{channel:adopted}])
                     self.assertFalse(row["passed"])
                     self.assertEqual(row["repair_shot"], 1)
                     self.assertEqual(row["literal_checks"][0]["adopted"], adopted)
@@ -36,18 +36,18 @@ class LiteralAudit(unittest.TestCase):
         self.assertFalse(row["passed"])
 
     def test_explicit_human_revision_is_bound_to_the_adopted_shot_and_literal(self):
-        note = "将标题从“杭州夜班”改为“杭州晨班”"
-        locks = [(1,"title","杭州夜班"),(2,"title","苏州")]
-        adopted = [self.edited(note,title="杭州晨班"),{"title":"苏洲"}]
+        note = "将标题从“花园夜班”改为“花园晨班”"
+        locks = [(1,"title","花园夜班"),(2,"title","海岛")]
+        adopted = [self.edited(note,title="花园晨班"),{"title":"海到"}]
         row = self.audit(locks,adopted)
         self.assertFalse(row["passed"])
         self.assertEqual(row["repair_shot"],2)
         first,second = row["literal_checks"]
-        self.assertEqual(first["expected"],"杭州晨班")
+        self.assertEqual(first["expected"],"花园晨班")
         self.assertEqual(first["user_revisions"],[note])
         self.assertTrue(first["passed"])
         self.assertFalse(second["passed"])
-        adopted[0]["title"] = "杭州辰班"
+        adopted[0]["title"] = "花园辰班"
         self.assertEqual(self.audit(locks,adopted)["repair_shot"],1)
 
     def test_nontextual_or_unattributed_note_cannot_unlock_a_line(self):

@@ -46,12 +46,35 @@ def config(path):
     for k in ("data", "assets", "workflows"):
         cfg[k] = (path.parent / cfg[k]).resolve()
         cfg[k].mkdir(parents=True, exist_ok=True)
+    for tool in ("ffmpeg", "ffprobe"):
+        if cfg.get(tool):
+            binary = Path(cfg[tool])
+            if not binary.is_absolute():
+                raise ValueError(f"{tool} 配置的绝对路径不可用：{binary}")
+            os.environ["FILM_" + tool.upper()] = str(binary)
+        else:
+            os.environ.pop("FILM_" + tool.upper(), None)
+    if cfg.get("motion_review","adaptive") not in {"adaptive","basic"}:
+        raise ValueError("motion_review 须为 adaptive 或 basic")
+    rules = cfg.get("aesthetic_rules",[])
+    if not isinstance(rules,list) or len(rules)>12 or any(not isinstance(r,str) or not 0<len(r.strip())<=400 for r in rules):
+        raise ValueError("aesthetic_rules 接受最多 12 条审美标准，每条 1–400 字")
+    if cfg.get("asr", "required") not in {"off", "required"}:
+        raise ValueError("asr 须为 off 或 required")
+    if cfg.get("dialogue_fallback","report") not in {"report","subtitles","dub"}:
+        raise ValueError("dialogue_fallback 须为 report、subtitles 或 dub")
+    if cfg.get("score_candidates",1) not in (1,2):
+        raise ValueError("配乐候选数只支持 1–2")
     for k in ("width", "height"):
         if type(cfg[k]) is not int or cfg[k] < 32 or cfg[k] % 2:
             raise ValueError(f"{k} must be a positive even dimension")
     if not 1 <= cfg["attempts"] <= 8 or not 1 <= cfg["threshold"] <= 5:
         raise ValueError("attempts 1–8, threshold 1–5")
     return cfg
+
+
+def executable(name):
+    return os.getenv("FILM_" + name.upper()) or name
 
 
 def run(args, cwd=None, timeout=3600):
@@ -96,7 +119,7 @@ def _request(url, body=None, *, headers=None, timeout=60, dest=None):
     except urllib.error.HTTPError as err:
         detail = err.read(1500).decode("utf8","replace")
         for secret in (os.getenv("FILM_LLM_KEY"),os.getenv("FILM_DS_KEY")):
-            if secret and len(secret)>6:
+            if secret:
                 detail = detail.replace(secret,"[redacted]")
         raise ServiceHTTPError(err.code,detail,err.headers.get("Retry-After")) from err
 
@@ -116,7 +139,8 @@ def canvas(cfg):
 
 def assets(cfg):
     return {p.name: p for p in sorted(cfg["assets"].iterdir())
-            if p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
+            if ("asset_allowlist" not in cfg or p.name in cfg["asset_allowlist"])
+            and p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg"}
             and p.resolve().parent == cfg["assets"]}
 
 def disk_budget(cfg, seconds=0):

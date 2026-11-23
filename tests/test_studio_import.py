@@ -23,7 +23,7 @@ class TestStudioImport(unittest.TestCase):
             folder.mkdir()
         self.source=self.old/"legacy.json"
         Image.new("RGB",(32,32),"red").save(self.old/"夜景.png")
-        self.project={"project_id":"proj_3617a34c","name":"先导片","script":"隧道出口。杭州办公室。","seconds":8,
+        self.project={"project_id":"fixture-project","name":"先导片","script":"木门打开。温室亮灯。","seconds":8,
                       "assets":[{"asset_id":"inputA","path":"夜景.png"}]}
         write(self.source,self.project)
         self.parser=argparse.ArgumentParser()
@@ -34,7 +34,7 @@ class TestStudioImport(unittest.TestCase):
         return studio_import.run(self.cfg,args)
 
     def test_prepare_and_enqueue_idempotently(self):
-        (self.old/"夜景.txt").write_text("杭州夜景",encoding="utf8")
+        (self.old/"夜景.txt").write_text("花园夜景",encoding="utf8")
         mapping=self.old/"mapping.json"
         write(mapping,{"links":[{"shot":"S02","first":"夜景.png"}],"mode":"auto","music":False})
         preview=self.invoke("--inspect")
@@ -51,7 +51,7 @@ class TestStudioImport(unittest.TestCase):
         self.assertEqual(set(assets(self.cfg)),set())
         (self.old/"夜景.png").unlink()
         self.assertTrue(assets(scoped)["夜景.png"].exists())
-        self.assertEqual((scoped["assets"]/"夜景.txt").read_text("utf8"),"杭州夜景")
+        self.assertEqual((scoped["assets"]/"夜景.txt").read_text("utf8"),"花园夜景")
         self.assertEqual(Store(self.cfg).claim(),saved["job_id"])
         plan={"shots":[{"start":"","end":""},{"start":"previous","end":""}]}
         studio_import.apply_links(sealed,plan)
@@ -64,11 +64,11 @@ class TestStudioImport(unittest.TestCase):
         images.mkdir()
         (self.old/"夜景.png").rename(images/"真实文件.png")
         write(self.source,{"items":[{"ID":"studio-3","x/y":{"~body":"保留全部台词。"},
-                           "media":[{"uid":"X1","local":"真实文件.png","key":"杭州.png"}]}]})
+                           "media":[{"uid":"X1","local":"真实文件.png","key":"花园.png"}]}]})
         meta=self.root/"map"
         meta.mkdir()
-        write(meta/"captions.json",{"X1":"生产线实拍"})
-        write(meta/"plan.json",{"id":"plan_6743a92b","shots":[{"status":"rejected"}]})
+        write(meta/"captions.json",{"X1":"虚构色板"})
+        write(meta/"plan.json",{"id":"fixture-plan","shots":[{"status":"rejected"}]})
         mapping=meta/"bind.json"
         write(mapping,{"project_pointer":"/items/0","fields":{"id":"/ID","script":"/x~1y/~0body","assets":"/media"},
                        "asset_fields":{"id":"/uid","path":"/local","name":"/key"},
@@ -80,7 +80,7 @@ class TestStudioImport(unittest.TestCase):
         self.assertEqual(read(b/"brief.json")["script"],"保留全部台词。")
         self.assertEqual(read(b/"source-plan.json"),read(meta/"plan.json"))
         self.assertFalse((b/"plan.json").exists())
-        self.assertEqual((b/"assets"/"杭州.txt").read_text("utf8"),"生产线实拍")
+        self.assertEqual((b/"assets"/"花园.txt").read_text("utf8"),"虚构色板")
 
     def test_reject_collision_and_missing_clip(self):
         self.project["assets"] += [{"path":"夜景.png"}]

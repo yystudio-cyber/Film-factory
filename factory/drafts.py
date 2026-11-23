@@ -8,6 +8,15 @@ from . import graphs, media
 from .common import Rejected, read, write
 
 
+def requested(spec,shot):
+    if not spec.get("render_drafts"):
+        return False
+    if spec.get("draft_policy","all")=="all":
+        return True
+    from .motion import risks
+    return bool(risks(shot,{},False))
+
+
 def settings(cfg):
     return dict(cfg,workflows=cfg["workflows"]/"draft",
                 width=max(32,2*round(cfg["width"]/4)),height=max(32,2*round(cfg["height"]/4)))
@@ -50,6 +59,7 @@ def screen(factory, jid, spec, plan, shot, first, last, seed, candidate, catalog
     cfg = settings(factory.cfg)
     folder = folder_for(candidate)
     folder.mkdir(parents=True,exist_ok=True)
+    write(folder/"owner.json",{"candidate":candidate.name})
     route = "FLF" if last else "I2V" if first else "T2V"
     if (folder/"review.json").exists():
         verdict = read(folder/"review.json")

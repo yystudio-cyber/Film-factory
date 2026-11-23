@@ -81,8 +81,12 @@ function renderAttempts(snap) {
         continuity: "衔接",
         artifacts: "画面完整性"
       })[k] || k) + ' ' + esc(v) + '/5').join('　') + '</div>' +
+      (a.speech ? '<p>对白回听 · ' + esc(a.speech.status==="unverified" ? "未验收" : "已转录核对") +
+        ' ' + esc(a.speech.language || "") + ' ' + esc(a.speech.fallback || "") + '</p>' : '') +
       '<p>' + esc(a.rejection?.reason || quality.notes || "") + '</p><details><summary>提示词与验收依据</summary><p>' + esc(
         a.design.prompt) + '</p>' +
+      (quality.aesthetic_checks || []).map(c => '<p>审美 ' + esc(c.index) + ' · ' +
+        (c.passed ? "通过" : "退回") + ' · ' + esc(c.evidence) + '</p>').join('') +
       (quality.checks || []).map(c => '<p>' + esc(c.result) + ' · ' + esc(c.evidence) + '</p>').join('') +
       '<small>ComfyUI 任务 ' + esc(a.ticket || "尚无回执") + '</small></details></div>';
   }).join("");
@@ -113,7 +117,11 @@ async function refresh() {
   by("detail").textContent = snap.detail;
   const n = Object.keys(snap.selected).length;
   by("meter").style.width = (snap.shots.length ? 100 * n / snap.shots.length : 0) + "%";
-  by("count").textContent = n + " / " + snap.shots.length + " 镜已采用";
+  const timing = [[6,8],[7.5,9.75],[9,11.5],[10.5,13.25],[12,15],[15,18.5],[18,22]];
+  const remain = snap.shots.filter((s,i) => !snap.selected[i+1]);
+  const estimate = remain.reduce(([lo,hi],s) => [lo+timing[s.seconds-2][0],hi+timing[s.seconds-2][1]],[0,0]);
+  by("count").textContent = n + " / " + snap.shots.length + " 镜已采用" +
+    (remain.length ? " · 剩余正片渲染约 " + Math.round(estimate[0]) + "–" + Math.ceil(estimate[1]) + " 分钟（各一遍，含当前镜全长）" : "");
   const measured = Object.entries({draft:"动作草稿",picture:"正片",score:"配乐"}).flatMap(([key, label]) => {
     const record = snap.production_times?.[key];
     return record ? [label + " " + record.calls + " 次 / " + (record.seconds / 60).toFixed(1) + " 分钟"] : [];
@@ -218,7 +226,7 @@ async function resources() {
   const queue = data.queue ? "运行 " + data.queue.running + "，等待 " + data.queue.pending : "未连接";
   by("resources").innerHTML = "<div>" + (devices.join("<br>") || "未取得 nvidia-smi 遥测") +
     "</div><small>工作盘剩余 " + data.disk_free_gib + " GiB" + (data.disk_hold ? "（空间不足，暂停领取新任务）" : "") +
-    " · ComfyUI 共享队列 " + queue + " · " + time(data.time) + "</small>";
+    " · " + esc(data.ownership || "") + " · ComfyUI 队列 " + queue + " · " + time(data.time) + "</small>";
 }
 resources().catch(report);
 setInterval(() => resources().catch(report), 12000);

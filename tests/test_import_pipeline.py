@@ -35,7 +35,7 @@ class StudioProductionTest(unittest.TestCase):
         clip_tail = archive.references(env.store, 'C006')['C006'].read_bytes()
         project = legacy/'project.json'
         write(project, {'project_id':'proj_test','name':'先导片','script':'三个工位，最后显现 END。',
-                        'seconds':6,'assets':[{'path':'anchor.png','description':'苏州试制车间的橙色门'}]})
+                        'seconds':6,'assets':[{'path':'anchor.png','description':'测试温室的橙色门'}]})
         mapping = legacy/'links.json'
         write(mapping, {'mode':'auto', 'music':True, 'links':[
             {'shot':1, 'first':'anchor.png'}, {'shot':2, 'first':'C006'},
@@ -53,7 +53,7 @@ class StudioProductionTest(unittest.TestCase):
                             if 'You direct the supplied film' in b['messages'][0]['content'])
         plan_payload = json.loads(plan_request[0]['text'] if isinstance(plan_request,list) else plan_request)
         self.assertEqual(set(plan_payload['assets']), {'anchor.png','C006'})
-        self.assertEqual(plan_payload['assets']['anchor.png'], '苏州试制车间的橙色门')
+        self.assertEqual(plan_payload['assets']['anchor.png'], '测试温室的橙色门')
         self.assertEqual([set(g['1']['inputs']) & {'first','last'} for g in env.submitted],
                          [{'first'},{'first'},{'first','last'}])
         self.assertEqual(len(env.uploaded),4)

@@ -12,12 +12,12 @@ from fractions import Fraction
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .common import read, Rejected, canvas, request, run, write
+from .common import executable, frame_count, read, Rejected, canvas, request, run, write
 
 
 def probe(path, count=False):
     options = ["-count_frames"] if count else []
-    return json.loads(run(["ffprobe", "-v", "error", *options, "-show_streams",
+    return json.loads(run([executable("ffprobe"), "-v", "error", *options, "-show_streams",
                            "-show_format", "-of", "json", path]))
 
 
@@ -26,7 +26,7 @@ def stream(info, kind):
 
 
 def ff(*args, cwd=None):
-    return run(["ffmpeg", "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-xerror",
+    return run([executable("ffmpeg"), "-nostdin", "-y", "-hide_banner", "-loglevel", "error", "-xerror",
                 "-filter_complex_threads", "2", "-filter_threads", "2", *args], cwd=cwd)
 
 
@@ -36,7 +36,7 @@ def _volume(path, duration=None):
     filters = "aresample=48000,aformat=channel_layouts=stereo,"
     if duration is not None:
         filters += f"atrim=duration={duration},"
-    result = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-xerror",
+    result = subprocess.run([executable("ffmpeg"), "-nostdin", "-hide_banner", "-nostats", "-xerror",
                              "-i", str(path), "-map", "0:a:0", "-vn", "-af",
                              filters+"volumedetect", "-f", "null", "-"],
                             capture_output=True, timeout=3600)
@@ -52,11 +52,15 @@ def technical(path, cfg, frames, master=False, audible=True):
         info = probe(path, count=True)
         v, a = stream(info, "video"), stream(info, "audio")
         allowed = {(cfg["width"], cfg["height"])} if master else {canvas(cfg), (cfg["width"], cfg["height"])}
+        if not master and cfg.get('station_contract'):
+            allowed = {canvas(cfg)}
         if (v.get("width"), v.get("height")) not in allowed:
             raise Rejected(f"Unexpected canvas {v.get('width')}×{v.get('height')}; expected {allowed}")
         n = int(v["nb_read_frames"])
         if Fraction(v["avg_frame_rate"]) != 24 or (n != frames if master else not frames <= n <= frames+8):
             raise Rejected(f"Timeline mismatch: {n} frames at {v['avg_frame_rate']}; target {frames}/24")
+        if not master and cfg.get("station_contract") and (n != frame_count(frames) or not a):
+            raise Rejected("原生输出必须包含同步音轨，帧数必须为 24×秒+1")
         if audible and not a:
             raise Rejected("缺少剧本要求的音轨；请检查 ComfyUI 保存节点是否连接音频")
         if master:
@@ -89,11 +93,17 @@ def technical(path, cfg, frames, master=False, audible=True):
 
 def samples(path, shot, folder):
     n = shot["frames"]
-    images = []
-    for i, frame in enumerate([0, n // 4, n // 2, 3*n // 4, n-1]):
-        name = folder / f"frame-{i}.jpg"
-        ff("-i", path, "-vf", f"select=eq(n\\,{frame}),scale=640:-2", "-frames:v", "1", name)
-        images.append(name)
+    indices = [0, n//4, n//2, 3*n//4, n-1]
+    select = "+".join(f"eq(n\\,{i})" for i in indices)
+    images = [folder/f"frame-{i}.jpg" for i in range(5)]
+    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+        ff("-i",path,"-an","-vf",f"select={select},scale=640:-2","-fps_mode","passthrough",
+           "-frames:v","5","-start_number","0",Path(tmp)/"frame-%d.jpg")
+        for target in images:
+            image = Path(tmp)/target.name
+            if not image.is_file():
+                raise Rejected("采用镜头缺少审查定帧")
+            os.replace(image,target)
     tail = folder / "tail.png"
     ff("-i", path, "-vf", f"select=eq(n\\,{n-1})", "-frames:v", "1", tail)
     return images
@@ -121,6 +131,26 @@ def graphics(cfg, shot, overlay, path):
             raise ValueError("定版文字过长，无法在安全区内排版")
         draw.multiline_text((w//2, round(h*position)), text, font=font, anchor="mm",
                             align="center", fill="white", stroke_width=max(1, size//22), stroke_fill="black")
+    if shot.get("bubble"):
+        text = shot["bubble"]
+        size = max(12,h//26)
+        draw = ImageDraw.Draw(canvas_img)
+        for point in range(size,7,-1):
+            font = ImageFont.truetype(cfg["font"],point)
+            if draw.textlength(text,font=font) <= .72*w:
+                break
+        else:
+            raise ValueError("气泡文字超出画面安全区")
+        x,y = w//12, h//6
+        pad = max(8,point//2)
+        right = x + round(draw.textlength(text,font=font)) + 3*pad
+        bottom = y+3*pad+point
+        draw.rounded_rectangle((x,y,right,bottom),radius=pad,fill="#fff8e5",outline="#252525",width=max(1,pad//5))
+        draw.polygon([(x+pad,bottom-1),(x+pad,bottom+pad),(x+3*pad,bottom-1)],fill="#fff8e5")
+        draw.text((x+pad,y+2*pad),text,font=font,fill="#252525",anchor="lt")
+        for cx in (right-3*pad,right-pad):
+            draw.ellipse((cx-pad//2,y-pad//2,cx+pad//2,y+pad),fill="white",outline="#252525")
+            draw.ellipse((cx-1,y,cx+pad//3,y+pad//2),fill="#252525")
     canvas_img.save(path)
 
 
@@ -232,11 +262,18 @@ def conform(cfg, src, shot, overlay, directory):
     layers = []
     count = 1
     video = f"[0:v]crop={w}:{h},setsar=1"
-    if overlay or shot["title"] or shot.get("caption"):
+    if overlay or shot["title"] or shot.get("caption") or shot.get("bubble"):
         image = directory / "overlay.png"
         graphics(cfg, shot, overlay, image)
         args.extend(["-i", image])
         video += f"[base];[base][{count}:v]overlay"
+        count += 1
+    if shot.get("endcard"):
+        layer = shot["endcard"]
+        path = directory/"endcard.png"
+        graphics(cfg,{"title":layer["text"]},None,path)
+        args.extend(["-i",path])
+        video += f"[precard];[precard][{count}:v]overlay=enable='gte(n,{layer['first_frame']})'"
         count += 1
     layers.append(video + ",format=yuv420p[v]")
     mute_native = shot.get("sound", "").strip().lower() in {"silence", "silent", "静音"} and not shot.get("dialogue")
@@ -246,8 +283,9 @@ def conform(cfg, src, shot, overlay, directory):
         args.extend(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo"])
         audio = f"[{count}:a]"
         count += 1
-    if shot["narration"]:
-        args.extend(["-i", narrate(shot, directory)])
+    if shot["narration"] or shot.get("dubbed_dialogue"):
+        voice = directory/"dub"/"voice.wav" if shot.get("dubbed_dialogue") else narrate(shot,directory)
+        args.extend(["-i", voice])
         layers.extend([
             f"[{count}:a]aresample=48000,apad,atrim=duration={duration},asetnsamples=n=240:p=0,asplit=2[voice][key]",
             audio + f"aresample=48000,apad,atrim=duration={duration},asetnsamples=n=240:p=0[native]",
@@ -259,7 +297,7 @@ def conform(cfg, src, shot, overlay, directory):
     layers.append(audio + "aresample=48000,apad,atrim=duration=" + str(duration) + "[a]")
     out = directory / "cut.mp4"
     ff(*args, "-filter_complex", ";".join(layers), "-map", "[v]", "-map", "[a]",
-       "-t", str(duration), "-r", "24", "-c:v", "libx264", "-crf", "17", "-preset", "veryfast",
+       "-t", str(duration), "-c:v", "libx264", "-crf", "17", "-preset", "veryfast",
        "-c:a", "aac", "-ac", "2", "-ar", "48000", out)
     return out
 
@@ -288,7 +326,7 @@ def music(cfg, prompt, seconds, directory, checkpoint):
         item = next((row for row in items if row["task_id"] == tid), {})
         if item.get("status") == 2:
             receipt.replace(directory/("score-failed-"+str(time.time_ns())+".json"))
-            raise ValueError("ACE-Step 配乐失败：" + str(item.get("result", ""))[:600])
+            raise Rejected("ACE-Step 配乐失败：" + str(item.get("result", ""))[:600])
         if item.get("status") == 1:
             results = item["result"]
             link = (json.loads(results) if isinstance(results, str) else results)[0]["file"]
@@ -299,22 +337,66 @@ def music(cfg, prompt, seconds, directory, checkpoint):
             request(base + url.path + "?" + url.query, dest=file, timeout=300)
             if float(probe(file)["format"]["duration"]) < seconds - .05:
                 receipt.replace(directory/("score-short-"+str(time.time_ns())+".json"))
-                raise ValueError("生成的配乐不足片长")
-            stats = subprocess.run(["ffmpeg","-nostdin","-hide_banner","-i",str(file),"-vn","-af",
+                raise Rejected("生成的配乐不足片长")
+            stats = subprocess.run([executable("ffmpeg"),"-nostdin","-hide_banner","-i",str(file),"-vn","-af",
                                     "volumedetect","-f","null","-"],capture_output=True,timeout=600)
             peak = re.search(rb"max_volume:\s*([-\d.]+) dB",stats.stderr)
             if stats.returncode or not peak or float(peak[1]) < -75:
                 receipt.replace(directory/("score-silent-"+str(time.time_ns())+".json"))
-                raise ValueError("ACE-Step 配乐单轨静音或无法解码")
+                raise Rejected("ACE-Step 配乐单轨静音或无法解码")
             return file
         time.sleep(cfg.get("poll_seconds", 2))
     raise TimeoutError("ACE-Step timeout")
 
 
+def select_music(cfg,prompt,seconds,folder,checkpoint):
+    if (folder/"score-ticket.json").exists() and not (folder/"score-selection.json").exists() and not (folder/"score-option-1").exists():
+        return music(cfg,prompt,seconds,folder,checkpoint)
+    if cfg.get("score_candidates",1)==1:
+        return music(cfg,prompt,seconds,folder,checkpoint)
+    # Separate native task receipts survive a process stop. No parallel ACE jobs.
+    candidates = []
+    rejected = {}
+    for number in range(1,3):
+        checkpoint()
+        work = folder/f"score-option-{number}"
+        work.mkdir(exist_ok=True)
+        rejection = work/"rejected.json"
+        if rejection.exists():
+            rejected[number]=read(rejection)["reason"]
+            continue
+        cache = work/"measured.json"
+        if cache.exists() and (work/"score.wav").is_file():
+            result = read(cache)
+        else:
+            try:
+                wav = music(cfg,prompt,seconds,work,checkpoint)
+                result = programme_level(wav)
+            except Rejected as err:
+                rejected[number]=str(err)
+                write(rejection,{"reason":str(err)})
+                continue
+            write(cache,result)
+        if result["integrated_lufs"] is not None and result["true_peak_dbtp"] is not None:
+            candidates.append((number,result))
+    if not candidates:
+        raise Rejected("配乐候选均无可测响度")
+    def rank(option):
+        level = option[1]
+        return (level["true_peak_dbtp"] > -1, abs(level["integrated_lufs"]+18), option[0])
+    number, _ = min(candidates,key=rank)
+    best = folder/f"score-option-{number}"
+    shutil.copyfile(best/"score.wav",folder/"score.wav")
+    write(folder/"score-ticket.json",read(best/"score-ticket.json"))
+    write(folder/"score-selection.json",{"selected":number,"criteria":"峰值余量、目标响度距离、候选顺序",
+                                         "candidates":dict(candidates),"rejected":rejected})
+    return folder/"score.wav"
+
+
 def programme_level(path):
     # Inspect the actual input measurement. loudnorm also describes a hypothetical
     # normalized output, which is irrelevant to verifying this encoded file.
-    proc = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-xerror",
+    proc = subprocess.run([executable("ffmpeg"), "-nostdin", "-hide_banner", "-nostats", "-xerror",
                            "-i", str(path), "-map", "0:a:0", "-af",
                            "loudnorm=print_format=json", "-f", "null", "-"],
                           capture_output=True, timeout=3600)
@@ -396,7 +478,7 @@ def _decode_foreground(clips, timeline, raw):
             dst.write(bytes(missing))
 
 
-def _audio_buses(raw, score, seconds, speech, silence):
+def _audio_buses(raw, score, seconds, speech, silence, extra_duck=()):
     inputs = ["-f", "s16le", "-ar", "48000", "-ac", "2", "-i", raw]
     graph, foreground, bed = [], "[0:a]", None
     if score:
@@ -412,6 +494,9 @@ def _audio_buses(raw, score, seconds, speech, silence):
                           "[music][key]sidechaincompress=threshold=0.02:ratio=6:attack=15:"
                           "release=320:detection=rms:makeup=1[ducked]"])
             bed = "[ducked]"
+        if extra_duck:
+            graph.append(bed+f"volume=0.25:enable='{_time_gate(extra_duck)}'[dialoguefocus]")
+            bed="[dialoguefocus]"
         if silence:
             graph.append(bed + f"asetnsamples=n=240:p=0,volume=0:enable='{_time_gate(silence)}'[scored]")
             bed = "[scored]"
@@ -436,7 +521,8 @@ def export_stems(clips, score, seconds, output_dir, *, timeline, gain_db):
         work = Path(tmp)
         raw = work/"foreground.pcm"
         _decode_foreground(clips, timeline, raw)
-        inputs, graph, foreground, bed = _audio_buses(raw, score, seconds, speech, silence)
+        inputs, graph, foreground, bed = _audio_buses(raw, score, seconds, speech, silence,
+                        _mix_intervals(timeline,lambda shot: shot.get("reduce_score_for_line")))
         outputs = []
         for bus, name, label in [(foreground, "foreground.wav", "fgout"), (bed, "music-bed.wav", "bgout")]:
             if bus:
@@ -465,7 +551,8 @@ def assemble(clips, score, seconds, directory, *, timeline=None, cfg=None):
     with tempfile.TemporaryDirectory(dir=directory) as work:
         raw = Path(work)/"foreground.pcm"
         _decode_foreground(clips, timeline, raw)
-        inputs, graph, foreground, bed = _audio_buses(raw, score, seconds, speech, silence)
+        inputs, graph, foreground, bed = _audio_buses(raw, score, seconds, speech, silence,
+                        _mix_intervals(timeline,lambda shot: shot.get("reduce_score_for_line")))
         mix = "0:a"
         if bed:
             graph.append(f"{foreground}{bed}amix=inputs=2:duration=first:normalize=0[mix]")
@@ -496,48 +583,99 @@ def assemble(clips, score, seconds, directory, *, timeline=None, cfg=None):
             expected = initial["integrated_lufs"]+gain
             if integrated is None or abs(integrated-expected)>1.5:
                 raise Rejected("AAC 成片实测响度偏离预期超过 1.5 LU")
+        if cfg.get("station_contract") and initial["integrated_lufs"] is not None and (
+                integrated is None or abs(integrated-target)>1):
+            # Use measured programme normalization when simple gain would breach the true peak ceiling.
+            ff("-copyts","-f","concat","-safe","1","-i",listing,"-i",wave,"-map","0:v:0","-map","1:a:0",
+               "-c:v","copy","-af",f"loudnorm=I={target}:TP={ceiling-.5}:LRA=11,aresample=48000",
+               "-c:a","aac","-ar","48000","-ac","2","-b:a","192k","-t",str(seconds),"-movflags","+faststart",output)
+            measured = programme_level(output)
+            reason="programme_loudnorm"
+            if (measured["integrated_lufs"] is None or abs(measured["integrated_lufs"]-target)>1 or
+                    measured["true_peak_dbtp"] is None or measured["true_peak_dbtp"]>ceiling):
+                raise Rejected("最终 AAC 母版响度或真峰值未达标")
         write(directory/"audio-mix.json", {"sample_rate":48000, "channels":2,
               "score":bool(score), "duck_intervals_seconds":speech if score else [],
+              "additional_dialogue_duck_db":-12.04,
+              "additional_dialogue_duck_intervals":_mix_intervals(timeline,lambda s:s.get("reduce_score_for_line")),
               "silent_intervals_seconds":silence, "target_lufs":target, "ceiling_dbtp":ceiling,
               "gain_db":round(gain,5), "gain_decision":reason, "before":initial, "encoded":measured})
     return output
 
 
 def contact_sheets(movie, timeline, folder):
-    """Select the midpoint of every accepted shot from the decoded final master."""
+    """Every timeline row shows actual incoming, midpoint and outgoing master frames."""
     from PIL import Image, ImageDraw
+    frames, pos = [], 0
+    for shot in timeline:
+        n = shot["frames"]
+        frames.extend([pos, pos+n//2, pos+n-1])
+        pos += n
     with tempfile.TemporaryDirectory(dir=folder) as tmp:
-        frames, pos = [], 0
-        for s in timeline:
-            frames.append(pos + s["frames"]//2)
-            pos += s["frames"]
         select = "+".join(f"eq(n\\,{n})" for n in frames)
-        ff("-i", movie, "-vf", f"select={select},scale=320:-2", "-fps_mode", "vfr",
-           Path(tmp)/"sample-%04d.jpg")
+        ff("-i",movie,"-an","-vf",f"select={select},scale=240:-2","-fps_mode","passthrough",
+           Path(tmp)/"sample-%06d.jpg")
         paths = sorted(Path(tmp).glob("sample-*.jpg"))
         if len(paths) != len(frames):
-            raise Rejected("成片抽帧数量与时间线不符")
+            raise Rejected("成片剪点、镜中或末帧缺失")
         boards = []
-        for start in range(0, len(paths), 16):
-            batch = paths[start:start+16]
-            with Image.open(batch[0]) as first:
-                w,h=first.size
-            sheet=Image.new("RGB",(w*min(4,len(batch)), (h+22)*((len(batch)+3)//4)), "#192321")
-            pen=ImageDraw.Draw(sheet)
-            for i,p in enumerate(batch):
-                x,y=i%4*w,i//4*(h+22)
-                with Image.open(p) as frame:
-                    sheet.paste(frame,(x,y))
-                pen.text((x+6,y+h+2),f"S{start+i+1:02}  {frames[start+i]/24:.2f}s",fill="white")
+        for start in range(0,len(timeline),16):
+            count = min(16,len(timeline)-start)
+            w,h=240,136
+            # Two columns of shots per page. Within each cell: entry, middle, exit.
+            board=Image.new("RGB",(min(count,2)*3*w,((count+1)//2)*(h+22)),"#192321")
+            pen=ImageDraw.Draw(board)
+            for i in range(count):
+                x,y=(i%2)*3*w,(i//2)*(h+22)
+                for j,role in enumerate(("IN","MID","OUT")):
+                    k=3*(start+i)+j
+                    with Image.open(paths[k]) as image:
+                        image.thumbnail((w,h))
+                        board.paste(image,(x+j*w,y))
+                    pen.text((x+j*w+4,y+h+1),f"S{start+i+1:02} {role} F{frames[k]}",fill="white")
             target=folder/f"master-sheet-{len(boards)+1:02}.jpg"
-            sheet.save(target,quality=88)
+            board.save(target,quality=90)
             boards.append(target)
         return boards
 
 
+def sound_windows(movie,timeline,folder):
+    """Short stereo windows from the encoded master. These levels do not identify an effect."""
+    import array
+    import sys
+    import wave
+    rate=16000
+    length=rate//4
+    rows=[]
+    cursor=0
+    with tempfile.TemporaryDirectory(dir=folder) as tmp:
+        path=Path(tmp)/"master-cue-windows.wav"
+        ff("-i",movie,"-map","0:a:0","-vn","-ar",str(rate),"-ac","2","-c:a","pcm_s16le",path)
+        with wave.open(str(path),"rb") as wav:
+            for i,shot in enumerate(timeline,1):
+                n=rate*shot["seconds"]
+                row={"shot":i}
+                for name,offset in (("entry",0),("middle",(n-length)//2),("exit",n-length)):
+                    wav.setpos(cursor+offset)
+                    samples=array.array("h")
+                    samples.frombytes(wav.readframes(length))
+                    if sys.byteorder!="little":
+                        samples.byteswap()
+                    if len(samples)!=length*2:
+                        raise Rejected("最终混音剪点证据不足")
+                    rms=math.sqrt(sum(s*s for s in samples)/len(samples))
+                    peak=max(map(abs,samples))
+                    row[name]={"start_seconds":(cursor+offset)/rate,
+                               "rms_dbfs":round(20*math.log10(rms/32768),2) if rms else None,
+                               "peak_dbfs":round(20*math.log10(peak/32768),2) if peak else None}
+                rows.append(row)
+                cursor+=n
+    return rows
+
+
 def temporal_signals(path):
     """Scan the decoded shot, including intervals between the review thumbnails."""
-    result = subprocess.run(["ffmpeg","-nostdin","-hide_banner","-nostats","-i",str(path),
+    result = subprocess.run([executable("ffmpeg"),"-nostdin","-hide_banner","-nostats","-i",str(path),
                              "-an","-vf","scale=320:-2,blackdetect=d=0.16:pix_th=0.08,"
                              "freezedetect=n=-55dB:d=0.5","-f","null","-"],
                             capture_output=True,timeout=300)
